@@ -15,9 +15,10 @@
 //! Nodes are multi-node aware: a [`Mempool`](mempool::Mempool) holds pending
 //! transactions, [`Node::produce_block`] packs the valid ones into a block, and
 //! blocks gossip between nodes ([`net::gossip`] in-process, or
-//! [`net::serve_blocks`] / [`net::pull_blocks`] over TCP) so peers converge on
-//! the same DAG. [`p2p::Mesh`] is the continuous overlay: peer discovery via
-//! hellos, a delayed relay loop, and tx (not just block) dissemination.
+//! [`net::serve_blocks`] / [`net::pull_blocks`] over TCP :9000) so peers
+//! converge on the same DAG. [`p2p::Mesh`] is the in-process overlay used by
+//! tests and the explorer's internal tick. The **only** on-wire path is
+//! plaintext TCP (`KOVANICA_LISTEN`, default `0.0.0.0:9000`).
 //! Actors are integer *seeds* the node signs for — a demo convenience,
 //! not how a real node handles keys (see [`node`]).
 //!

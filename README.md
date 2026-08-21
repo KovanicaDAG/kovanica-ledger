@@ -5,16 +5,18 @@
 | Host | Process |
 | --- | --- |
 | `explorer.kovanica.online` | `kovanica-node explorer 127.0.0.1:8080` (this repo) |
-| `kovanica.online` / `wallet` / `map` | [kovanica-web](https://github.com/BetterCallDzuks/kovanica-web) on `:3010` |
+| `kovanica.online` / `wallet` / `map` | [kovanica-web](https://github.com/KovanicaDAG/kovanica-web) on `:3010` |
 
 ```sh
 cargo run -p kovanica-node -- explorer 127.0.0.1:8080
 ```
 
-Env on the public node: `KOVANICA_POW=1` `KOVANICA_MINE=0` `KOVANICA_FAUCET=0` `KOVANICA_ALLOW_RESET=0` `KOVANICA_LISTEN=0.0.0.0:9000`.
+Env on the public node: `KOVANICA_POW=1` `KOVANICA_MINE=0` `KOVANICA_FAUCET=0` `KOVANICA_ALLOW_RESET=0` `KOVANICA_LISTEN=0.0.0.0:9000` `KOVANICA_PEERS=off`.
+
+TCP **:9000** is the only P2P path (libp2p/30333 removed). Clones: `KOVANICA_PEERS=explorer.kovanica.online:9000`. Cloneable tree: [kovanica-node](https://github.com/KovanicaDAG/kovanica-node).
 
 Do **not** rebuild from `claude/claude-md-docs-*` — that line has no HTTP `explorer` mode.
-UI is TypeScript only: [kovanica-web](https://github.com/BetterCallDzuks/kovanica-web). GHOSTDAG / UTXO / Ed25519 stay here.
+UI is TypeScript only: [kovanica-web](https://github.com/KovanicaDAG/kovanica-web). GHOSTDAG / UTXO / Ed25519 stay here.
 
 See [`TESTNET.md`](./TESTNET.md) for `kovanica-testnet-1`.
 

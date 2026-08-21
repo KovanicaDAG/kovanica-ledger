@@ -9,8 +9,11 @@
 //! minimal **peer discovery**). Time is discrete ([`Mesh::tick`]) so tests
 //! stay deterministic — there is no thread, socket, or wall-clock wait here.
 //!
-//! TCP one-shot sync stays in [`crate::net`]. Wiring this relay loop onto
-//! long-lived TCP/WebSocket sessions is a later slice.
+//! TCP one-shot sync (the on-wire path) lives in [`crate::net`]: a seed
+//! accepts on `KOVANICA_LISTEN` (default `:9000`) and writes every block;
+//! a clone pulls with `KOVANICA_PEERS=explorer.kovanica.online:9000`.
+//! Long-lived relay sessions are [`crate::relay`] — tests only, not the
+//! explorer loop.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 

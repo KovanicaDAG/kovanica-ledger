@@ -26,6 +26,9 @@ const GENESIS_SUBSIDY: u64 = 50 * ATOM;
 const GENESIS_PREMINE: u64 = 50 * ATOM;
 const NETWORK: &str = "kovanica-testnet-1";
 const ACTORS: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+/// Single P2P path: plaintext TCP. Not 80/443/3010/8080 and not libp2p :30333.
+const P2P_LISTEN_DEFAULT: &str = "0.0.0.0:9000";
+const P2P_BOOTSTRAP: &str = "explorer.kovanica.online:9000";
 
 /// Bind `addr` (e.g. `0.0.0.0:8080`) and serve the explorer until killed.
 pub fn serve(addr: impl ToSocketAddrs) -> std::io::Result<()> {
@@ -100,23 +103,41 @@ impl Explorer {
 
     fn tick_p2p(&mut self) {
         if let Some(listener) = self.listen.as_ref() {
-            if let Ok((mut stream, _)) = listener.accept() {
+            if let Ok((mut stream, peer)) = listener.accept() {
                 if let Some(n) = self.mesh.node("alpha") {
                     let bytes = encode_records(&n.export());
                     let _ = stream.write_all(&bytes);
                     let _ = stream.flush();
+                    eprintln!("kovanica p2p served {} bytes to {peer}", bytes.len());
                 }
             }
         }
         if !self.peers.is_empty() && self.ticks % 250 == 0 {
-            let peers = self.peers.clone();
-            if let Some(n) = self.mesh.node_mut("alpha") {
-                for addr in peers {
-                    let _ = pull_blocks_timeout(&addr, n, Duration::from_millis(400));
+            self.sync_peers(Duration::from_millis(800), false);
+        }
+    }
+
+    fn sync_peers(&mut self, timeout: Duration, log: bool) {
+        let peers = self.peers.clone();
+        if peers.is_empty() {
+            return;
+        }
+        if let Some(n) = self.mesh.node_mut("alpha") {
+            for addr in peers {
+                match pull_blocks_timeout(&addr, n, timeout) {
+                    Ok(k) if k > 0 => {
+                        eprintln!("kovanica p2p pulled {k} records from {addr}");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        if log {
+                            eprintln!("kovanica p2p pull {addr}: {e}");
+                        }
+                    }
                 }
             }
-            persist_all(&self.mesh);
         }
+        persist_all(&self.mesh);
     }
 
     fn boot_persist() -> Self {
@@ -142,7 +163,7 @@ impl Explorer {
         if !listen_addr.is_empty() || !peers.is_empty() {
             eprintln!("kovanica p2p listen={listen_addr} peers={peers:?}");
         }
-        Self {
+        let mut app = Self {
             mesh,
             selected: "alpha".into(),
             mining: env_flag("KOVANICA_MINE", false),
@@ -154,7 +175,9 @@ impl Explorer {
             listen,
             listen_addr,
             peers,
-        }
+        };
+        app.sync_peers(Duration::from_secs(3), true);
+        app
     }
 
     fn select(&mut self, name: &str) {
@@ -269,25 +292,43 @@ fn ensure_network() {
 }
 
 fn bind_p2p() -> Option<TcpListener> {
-    let addr = std::env::var("KOVANICA_LISTEN").ok()?;
-    let listener = TcpListener::bind(&addr).ok()?;
-    listener.set_nonblocking(true).ok()?;
-    if let Ok(local) = listener.local_addr() {
-        eprintln!("kovanica p2p listen {local}");
+    let raw = std::env::var("KOVANICA_LISTEN").unwrap_or_else(|_| P2P_LISTEN_DEFAULT.into());
+    if env_off(&raw) {
+        eprintln!("kovanica p2p listen disabled");
+        return None;
     }
-    Some(listener)
+    match TcpListener::bind(&raw) {
+        Ok(listener) => {
+            if let Err(e) = listener.set_nonblocking(true) {
+                eprintln!("kovanica p2p listen {raw} nonblocking failed: {e}");
+                return None;
+            }
+            if let Ok(local) = listener.local_addr() {
+                eprintln!("kovanica p2p listen {local}");
+            }
+            Some(listener)
+        }
+        Err(e) => {
+            eprintln!("kovanica p2p listen {raw} failed: {e}");
+            None
+        }
+    }
 }
 
 fn peer_list() -> Vec<String> {
-    std::env::var("KOVANICA_PEERS")
-        .ok()
-        .map(|s| {
-            s.split(',')
-                .map(|x| x.trim().to_string())
-                .filter(|x| !x.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
+    match std::env::var("KOVANICA_PEERS") {
+        Ok(s) if env_off(s.trim()) => Vec::new(),
+        Ok(s) => s
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect(),
+        Err(_) => vec![P2P_BOOTSTRAP.to_string()],
+    }
+}
+
+fn env_off(v: &str) -> bool {
+    matches!(v, "" | "0" | "off" | "none" | "false" | "FALSE")
 }
 
 fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
@@ -388,6 +429,21 @@ fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
                 ATOM
             );
             return respond(&mut stream, 200, "application/json", body.as_bytes());
+        }
+    }
+    if method == "GET" && path == "/api/p2p" {
+        let body = format!(
+            "{{\"path\":\"tcp\",\"listen\":{},\"peers\":{},\"bootstrap\":{}}}",
+            jstr(&app.listen_addr),
+            jarr(app.peers.iter().map(|s| jstr(s))),
+            jstr(P2P_BOOTSTRAP)
+        );
+        return respond(&mut stream, 200, "application/json", body.as_bytes());
+    }
+    if method == "GET" && path == "/api/blocks" {
+        if let Some(n) = app.mesh.node(&app.selected) {
+            let bytes = encode_records(&n.export());
+            return respond(&mut stream, 200, "application/octet-stream", &bytes);
         }
     }
     if method == "GET" && path == "/api/history" {
@@ -1075,5 +1131,14 @@ mod tests {
         let fee = app.mesh.node("alpha").unwrap().min_fee();
         assert_eq!(fee, (GENESIS_SUBSIDY / 500_000).max(1));
         assert!(fee > 1);
+    }
+
+    #[test]
+    fn p2p_off_tokens() {
+        assert!(env_off("off"));
+        assert!(env_off("none"));
+        assert!(env_off("0"));
+        assert!(!env_off(P2P_LISTEN_DEFAULT));
+        assert_eq!(P2P_BOOTSTRAP, "explorer.kovanica.online:9000");
     }
 }
