@@ -2,6 +2,7 @@
 //! Rust node. The page never reimplements consensus — it only renders what
 //! [`Mesh`] / [`Node`] already computed.
 
+use base64::Engine;
 use sha1::Sha1;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -12,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use base64;
 use kovanica_dag::BlockId;
 use kovanica_state::{Address, Transaction};
 
