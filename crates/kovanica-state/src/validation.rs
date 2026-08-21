@@ -302,10 +302,11 @@ mod tests {
         // Create a transaction with a huge tag to exceed MAX_TX_SIZE
         let huge_tag = vec![0u8; MAX_TX_SIZE + 100];
         let large_tx = Transaction::signed(&[(coin(7), &kp)], vec![TxOutput::new(5, addr(2))], huge_tag);
+        let tx_size = large_tx.encode().len();
         let payload = encode_block_payload(&[large_tx]);
         assert_eq!(
             validate_block_payload(&payload),
-            Err(BlockValidationError::TxTooLarge { tx_index: 0, size: large_tx.encode().len() })
+            Err(BlockValidationError::TxTooLarge { tx_index: 0, size: tx_size })
         );
     }
 
