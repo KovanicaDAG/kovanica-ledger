@@ -2,8 +2,8 @@
 //! Rust node. The page never reimplements consensus — it only renders what
 //! [`Mesh`] / [`Node`] already computed.
 
-use sha1::{Digest, Sha1};
-use std::collections::{HashMap, HashSet, VecDeque};
+use sha1::Sha1;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -440,7 +440,7 @@ fn handle_websocket(app: &mut Explorer, mut stream: TcpStream, req: &str) -> std
         let mut hasher = Sha1::new();
         hasher.update(key.as_bytes());
         hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-        base64::encode(hasher.finalize())
+        base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
     };
     let resp = format!(
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
