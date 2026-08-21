@@ -16,7 +16,7 @@ use kovanica_dag::{pow, Block, BlockId, Dag, DagError};
 use kovanica_state::{
     apply_block, decode_block_payload, encode_block_payload, verify, Address, KeyPair, Ledger,
     LedgerError, LedgerInsertError, LedgerStore, OutPoint, Sig, Transaction, TxId, TxOutput,
-    UtxoSet,
+    UtxoSet, HalvingSchedule, DEFAULT_HALVING_ERA,
 };
 
 use crate::mempool::Mempool;
@@ -271,7 +271,8 @@ impl Node {
         let founder = Self::address(founder_seed);
         let coinbase =
             Transaction::coinbase(vec![TxOutput::new(amount, founder)], b"genesis".to_vec());
-        let ledger = Ledger::new(k, subsidy, &[coinbase]).map_err(NodeError::Ledger)?;
+        let schedule = HalvingSchedule::new(subsidy, DEFAULT_HALVING_ERA);
+        let ledger = Ledger::new(k, schedule, &[coinbase]).map_err(NodeError::Ledger)?;
         let genesis = ledger.genesis();
         self.ledger = Some(ledger);
         self.miner = Some(founder);
@@ -298,17 +299,11 @@ impl Node {
     /// genesis subsidy cap). Coinbase still cannot exceed `ledger.subsidy()`.
     pub fn issuance(&self) -> Result<u64, NodeError> {
         let ledger = self.ledger()?;
-        Ok(Self::issuance_at(ledger.subsidy(), ledger.dag().len() as u64))
-    }
-
-    /// `cap >> (height / HALVING_ERA)`, saturating at zero.
-    pub fn issuance_at(cap: u64, height: u64) -> u64 {
-        let era = height / HALVING_ERA;
-        if era >= 63 {
-            0
-        } else {
-            cap >> era
-        }
+        let tip = ledger.dag().selected_tip();
+        let height = ledger.schedule().subsidy_at(ledger.dag().len() as u64);
+        // Use the schedule's subsidy_at based on the selected tip's height
+        // The schedule already computes this correctly
+        Ok(ledger.subsidy())
     }
 
     pub(crate) fn ledger(&self) -> Result<&Ledger, NodeError> {

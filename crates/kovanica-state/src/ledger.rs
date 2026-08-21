@@ -49,6 +49,38 @@ use kovanica_dag::{
 };
 
 use crate::keys::verify;
+
+/// Halving schedule for block subsidy.
+///
+/// The subsidy starts at `genesis_subsidy` and halves every `halving_era` blocks
+/// along the selected-parent chain. Genesis (height 0) gets the full subsidy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HalvingSchedule {
+    /// Subsidy at genesis (height 0).
+    pub genesis_subsidy: u64,
+    /// Number of blocks per halving era.
+    pub halving_era: u64,
+}
+
+impl HalvingSchedule {
+    /// Create a new halving schedule.
+    pub const fn new(genesis_subsidy: u64, halving_era: u64) -> Self {
+        Self { genesis_subsidy, halving_era }
+    }
+
+    /// Compute the subsidy for a block at `height` (height 0 = genesis).
+    pub fn subsidy_at(&self, height: u64) -> u64 {
+        let era = height / self.halving_era;
+        if era >= 63 {
+            0
+        } else {
+            self.genesis_subsidy >> era
+        }
+    }
+}
+
+/// Default halving era: 1000 blocks.
+pub const DEFAULT_HALVING_ERA: u64 = 1_000;
 use crate::tx::{
     decode_block_payload, encode_block_payload, DecodeError, OutPoint, Transaction, TxId,
 };
@@ -395,7 +427,7 @@ impl std::error::Error for LedgerInsertError {}
 /// never rejects on finality.
 pub struct Ledger {
     dag: Dag,
-    subsidy: u64,
+    schedule: HalvingSchedule,
     genesis: BlockId,
     /// Blocks this far in blue score below the selected tip are final; their
     /// state is pruned and they cannot be built on. `u64::MAX` = never.
@@ -403,17 +435,20 @@ pub struct Ledger {
     /// Per-block view UTXO state: `states[&b]` is the ledger state in `b`'s view.
     /// Final blocks (below the finality point) are pruned from this map.
     states: HashMap<BlockId, UtxoSet>,
+    /// Block heights: `heights[&b]` is the height of block `b` in the selected chain.
+    heights: HashMap<BlockId, u64>,
 }
 
 impl Ledger {
     /// Create a ledger whose genesis block carries `genesis_txs` (typically a
     /// single coinbase minting the initial supply). `k` is the GHOSTDAG
-    /// parameter and `subsidy` the per-block issuance allowance.
+    /// parameter and `schedule` the halving schedule for per-block issuance.
     ///
     /// Fails if `genesis_txs` are not a valid block on an empty UTXO set.
-    pub fn new(k: KParam, subsidy: u64, genesis_txs: &[Transaction]) -> Result<Self, LedgerError> {
+    pub fn new(k: KParam, schedule: HalvingSchedule, genesis_txs: &[Transaction]) -> Result<Self, LedgerError> {
+        let genesis_subsidy = schedule.subsidy_at(0);
         let mut state = UtxoSet::new();
-        apply_block(&mut state, genesis_txs, subsidy)?;
+        apply_block(&mut state, genesis_txs, genesis_subsidy)?;
 
         let genesis = Block::genesis(1, 0, 0, encode_block_payload(genesis_txs));
         let genesis_id = genesis.id();
@@ -421,12 +456,15 @@ impl Ledger {
 
         let mut states = HashMap::new();
         states.insert(genesis_id, state);
+        let mut heights = HashMap::new();
+        heights.insert(genesis_id, 0);
         Ok(Self {
             dag,
-            subsidy,
+            schedule,
             genesis: genesis_id,
             finality_depth: u64::MAX,
             states,
+            heights,
         })
     }
 
@@ -435,11 +473,11 @@ impl Ledger {
     /// not be built on, and their per-block state is pruned. See the type docs.
     pub fn with_finality(
         k: KParam,
-        subsidy: u64,
+        schedule: HalvingSchedule,
         genesis_txs: &[Transaction],
         finality_depth: u64,
     ) -> Result<Self, LedgerError> {
-        let mut ledger = Self::new(k, subsidy, genesis_txs)?;
+        let mut ledger = Self::new(k, schedule, genesis_txs)?;
         ledger.finality_depth = finality_depth;
         Ok(ledger)
     }
@@ -490,9 +528,16 @@ impl Ledger {
         self.genesis
     }
 
-    /// The per-block issuance allowance.
+    /// The subsidy for the next block (based on the selected tip's height).
     pub fn subsidy(&self) -> u64 {
-        self.subsidy
+        let tip = self.dag.selected_tip();
+        let height = self.heights.get(&tip).copied().unwrap_or(0);
+        self.schedule.subsidy_at(height + 1)
+    }
+
+    /// The halving schedule.
+    pub fn schedule(&self) -> HalvingSchedule {
+        self.schedule
     }
 
     /// The UTXO state in `block`'s own view, if `block` is present.
@@ -546,12 +591,20 @@ impl Ledger {
             });
         }
 
+        let parent_height = self
+            .heights
+            .get(&preview.selected_parent)
+            .copied()
+            .unwrap_or(0);
+        let new_height = parent_height + 1;
+
         let mut state = self
             .states
             .get(&preview.selected_parent)
             .expect("non-final selected parent always has a stored state")
             .clone();
         for merged in &preview.mergeset {
+            let merged_height = self.heights.get(merged).copied().unwrap_or(0);
             let payload = self
                 .dag
                 .block(merged)
@@ -561,17 +614,18 @@ impl Ledger {
                 // A merged block that conflicts in this view simply does not
                 // apply — its transactions were valid in their own view, not
                 // necessarily here. This mirrors apply_dag's per-block reject.
-                let _ = apply_block(&mut state, &merged_txs, self.subsidy);
+                let _ = apply_block(&mut state, &merged_txs, self.schedule.subsidy_at(merged_height));
             }
         }
 
         // Stateful validation: the block's own transactions must be valid against
         // its view pre-state. Failure rejects the block before it enters the DAG.
-        apply_block(&mut state, txs, self.subsidy)?;
+        apply_block(&mut state, txs, self.schedule.subsidy_at(new_height))?;
 
         // Commit: add to the DAG (structural checks run here) and store the state.
         let id = self.dag.insert(block)?;
         self.states.insert(id, state);
+        self.heights.insert(id, new_height);
         self.prune();
         Ok(id)
     }
@@ -598,14 +652,14 @@ impl Ledger {
             .collect();
         for id in stale {
             self.states.remove(&id);
+            self.heights.remove(&id);
         }
     }
 
     /// The full current ledger state: every block applied in linearized order.
     ///
     /// Built incrementally as the selected tip's view state plus the side blocks
-    /// under the other tips (the linearization's tail). Equal to
-    /// `apply_dag(self.dag(), self.subsidy()).utxo`.
+    /// under the other tips (the linearization's tail).
     pub fn ledger_state(&self) -> UtxoSet {
         let order = self.dag.linearize();
         let selected_tip = self.dag.selected_tip();
@@ -620,19 +674,20 @@ impl Ledger {
             .expect("selected tip has a stored state")
             .clone();
         for block in &order[tip_pos + 1..] {
+            let height = self.heights.get(block).copied().unwrap_or(0);
             let payload = self
                 .dag
                 .block(block)
                 .expect("block is in the DAG")
                 .payload();
             if let Ok(txs) = decode_block_payload(payload) {
-                let _ = apply_block(&mut state, &txs, self.subsidy);
+                let _ = apply_block(&mut state, &txs, self.schedule.subsidy_at(height));
             }
         }
         state
     }
 
-    /// Serialise the ledger to a self-contained snapshot: the subsidy plus the
+    /// Serialise the ledger to a self-contained snapshot: the halving schedule plus the
     /// underlying DAG's replay log (see [`Dag::write_snapshot`]). Per-block UTXO
     /// state is *not* stored — it is recomputed on load by replaying blocks
     /// through [`Ledger::insert`], so nothing derived is trusted from disk.
@@ -640,7 +695,8 @@ impl Ledger {
         let mut buf = Vec::new();
         buf.extend_from_slice(&LEDGER_MAGIC);
         buf.extend_from_slice(&LEDGER_VERSION.to_le_bytes());
-        buf.extend_from_slice(&self.subsidy.to_le_bytes());
+        buf.extend_from_slice(&self.schedule.genesis_subsidy.to_le_bytes());
+        buf.extend_from_slice(&self.schedule.halving_era.to_le_bytes());
         buf.extend_from_slice(&self.dag.write_snapshot());
         buf
     }
@@ -654,22 +710,24 @@ impl Ledger {
         if bytes.len() < 4 || bytes[..4] != LEDGER_MAGIC {
             return Err(LedgerSnapshotError::BadMagic);
         }
-        if bytes.len() < 14 {
+        if bytes.len() < 22 {
             return Err(LedgerSnapshotError::Dag(SnapshotError::UnexpectedEof));
         }
         let version = u16::from_le_bytes([bytes[4], bytes[5]]);
         if version != LEDGER_VERSION {
             return Err(LedgerSnapshotError::UnsupportedVersion(version));
         }
-        let subsidy = u64::from_le_bytes(bytes[6..14].try_into().expect("14 - 6 == 8 bytes"));
+        let genesis_subsidy = u64::from_le_bytes(bytes[6..14].try_into().expect("14 - 6 == 8 bytes"));
+        let halving_era = u64::from_le_bytes(bytes[14..22].try_into().expect("22 - 14 == 8 bytes"));
+        let schedule = HalvingSchedule::new(genesis_subsidy, halving_era);
 
-        let snapshot = decode_snapshot(&bytes[14..]).map_err(LedgerSnapshotError::Dag)?;
+        let snapshot = decode_snapshot(&bytes[22..]).map_err(LedgerSnapshotError::Dag)?;
         let mut blocks = snapshot.blocks.into_iter();
         let genesis = blocks.next().ok_or(LedgerSnapshotError::Empty)?;
         let genesis_txs =
             decode_block_payload(genesis.payload()).map_err(LedgerSnapshotError::Payload)?;
         let mut ledger =
-            Ledger::new(snapshot.k, subsidy, &genesis_txs).map_err(LedgerSnapshotError::Genesis)?;
+            Ledger::new(snapshot.k, schedule, &genesis_txs).map_err(LedgerSnapshotError::Genesis)?;
         for block in blocks {
             let txs =
                 decode_block_payload(block.payload()).map_err(LedgerSnapshotError::Payload)?;

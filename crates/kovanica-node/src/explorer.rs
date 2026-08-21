@@ -2,14 +2,17 @@
 //! Rust node. The page never reimplements consensus — it only renders what
 //! [`Mesh`] / [`Node`] already computed.
 
-use std::collections::{HashMap, HashSet};
+use sha1::{Digest, Sha1};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use base64;
 use kovanica_dag::BlockId;
 use kovanica_state::{Address, Transaction};
 
@@ -30,6 +33,26 @@ const ACTORS: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 const P2P_LISTEN_DEFAULT: &str = "0.0.0.0:9000";
 const P2P_BOOTSTRAP: &str = "explorer.kovanica.online:9000";
 
+/// WebSocket message types for real-time updates
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+enum WsMsg {
+    #[serde(rename = "block")]
+    Block { id: String, blue_score: u64 },
+    #[serde(rename = "tx")]
+    Tx { id: String, from: String, to: String, amount: u64 },
+    #[serde(rename = "tip")]
+    Tip { id: String, blue_score: u64 },
+    #[serde(rename = "peer")]
+    Peer { addr: String, connected: bool },
+    #[serde(rename = "state")]
+    State { snapshot: String },
+    #[serde(rename = "ping")]
+    Ping,
+    #[serde(rename = "pong")]
+    Pong,
+}
+
 /// Bind `addr` (e.g. `0.0.0.0:8080`) and serve the explorer until killed.
 pub fn serve(addr: impl ToSocketAddrs) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr)?;
@@ -46,6 +69,7 @@ pub fn serve(addr: impl ToSocketAddrs) -> std::io::Result<()> {
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 app.tick();
+                app.ws_broadcast_state();
                 thread::sleep(Duration::from_millis(40));
             }
             Err(e) => return Err(e),
@@ -66,6 +90,7 @@ struct Explorer {
     listen_addr: String,
     peers: Vec<String>,
     origins: HashMap<String, u64>,
+    ws_clients: Arc<Mutex<Vec<Arc<Mutex<TcpStream>>>>>,
 }
 
 impl Explorer {
@@ -85,6 +110,7 @@ impl Explorer {
             listen_addr: String::new(),
             peers: Vec::new(),
             origins: HashMap::new(),
+            ws_clients: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -101,6 +127,28 @@ impl Explorer {
                 persist_all(&self.mesh);
             }
         }
+    }
+
+    fn ws_broadcast_state(&self) {
+        if self.ws_clients.lock().unwrap().is_empty() {
+            return;
+        }
+        let snapshot = self.snapshot_json();
+        let msg = WsMsg::State { snapshot };
+        let text = serde_json::to_string(&msg).unwrap_or_default();
+        let frame = ws_frame_text(&text);
+        let mut clients = self.ws_clients.lock().unwrap();
+        clients.retain_mut(|client| {
+            if let Ok(mut c) = client.lock() {
+                c.write_all(&frame).is_ok() && c.flush().is_ok()
+            } else {
+                false
+            }
+        });
+    }
+
+    fn snapshot_json(&self) -> String {
+        snapshot(self)
     }
 
     fn tick_p2p(&mut self) {
@@ -378,6 +426,56 @@ fn origins_json(map: &HashMap<String, u64>) -> String {
     format!("{{\"pulses\":{}}}", jarr(items))
 }
 
+fn handle_websocket(app: &mut Explorer, mut stream: TcpStream, req: &str) -> std::io::Result<()> {
+    // Extract Sec-WebSocket-Key
+    let key = req
+        .lines()
+        .find(|l| l.to_lowercase().starts_with("sec-websocket-key:"))
+        .and_then(|l| l.split(':').nth(1))
+        .map(|s| s.trim())
+        .unwrap_or("");
+    let accept = {
+        use sha1::{Digest, Sha1};
+        let mut hasher = Sha1::new();
+        hasher.update(key.as_bytes());
+        hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+        base64::encode(hasher.finalize())
+    };
+    let resp = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+    );
+    stream.write_all(resp.as_bytes())?;
+    stream.flush()?;
+
+    // Register client
+    let client = Arc::new(Mutex::new(stream));
+    app.ws_clients.lock().unwrap().push(client.clone());
+
+    // Read loop (handle ping/pong, keep alive)
+    let mut buf = [0u8; 1024];
+    loop {
+        match client.lock().unwrap().read(&mut buf) {
+            Ok(0) => break, // Connection closed
+            Ok(n) => {
+                // Simple WebSocket frame parsing (just handle ping/pong)
+                if n >= 2 && (buf[0] & 0x80) != 0 && (buf[0] & 0x0F) == 0x9 {
+                    // Ping frame - respond with pong
+                    let pong = vec![0x8A, 0x00]; // Pong frame, no payload
+                    if let Ok(mut c) = client.lock() {
+                        let _ = c.write_all(&pong);
+                        let _ = c.flush();
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    // Unregister client
+    app.ws_clients.lock().unwrap().retain(|c| !Arc::ptr_eq(c, &client));
+    Ok(())
+}
+
 fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -394,6 +492,11 @@ fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
     let method = parts.next().unwrap_or("GET");
     let target = parts.next().unwrap_or("/");
     let (path, query) = split_query(target);
+
+    // WebSocket upgrade
+    if method == "GET" && path == "/ws" && req.contains("Upgrade: websocket") {
+        return handle_websocket(app, stream, &req);
+    }
 
     if method == "HEAD" && (path == "/" || path == "/index.html" || path == "/wallet") {
         return respond(&mut stream, 200, "text/html; charset=utf-8", b"");
@@ -1085,6 +1188,24 @@ fn jarr(items: impl Iterator<Item = String>) -> String {
     out.push(']');
     out
 }
+
+fn ws_frame_text(text: &str) -> Vec<u8> {
+    let payload = text.as_bytes();
+    let mut frame = Vec::with_capacity(2 + payload.len());
+    frame.push(0x81); // FIN + text frame
+    if payload.len() < 126 {
+        frame.push(payload.len() as u8);
+    } else if payload.len() < 65536 {
+        frame.push(126);
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        frame.push(127);
+        frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
+    frame.extend_from_slice(payload);
+    frame
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

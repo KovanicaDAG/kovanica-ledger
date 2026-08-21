@@ -11,6 +11,8 @@ description = "Runnable node for the Kovanica DAG ledger: a line RPC over an in-
 kovanica-dag = { path = "../kovanica-dag" }
 kovanica-state = { path = "../kovanica-state" }
 hex.workspace = true
+base64 = "0.22"
+sha1 = "0.10"
 
 [lints.rust]
 unsafe_code = "forbid"

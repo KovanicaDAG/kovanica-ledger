@@ -50,6 +50,13 @@ use kovanica_dag::{Block, BlockValidator, Dag};
 
 use crate::tx::{decode_block_payload, DecodeError, OutPoint, Transaction};
 
+/// Maximum serialized transaction size in bytes (100 KB).
+pub const MAX_TX_SIZE: usize = 100_000;
+/// Maximum serialized block payload size in bytes (1 MB).
+pub const MAX_BLOCK_PAYLOAD_SIZE: usize = 1_000_000;
+/// Maximum number of transactions per block.
+pub const MAX_TXS_PER_BLOCK: usize = 1000;
+
 /// Why a block's payload failed structural (context-free) validation.
 ///
 /// Every variant names the offending transaction by its index within the block,
@@ -71,6 +78,12 @@ pub enum BlockValidationError {
     },
     /// A transaction's output values overflow `u64` when summed.
     ValueOverflow { tx_index: usize },
+    /// A transaction exceeds the maximum allowed size.
+    TxTooLarge { tx_index: usize, size: usize },
+    /// Block payload exceeds the maximum allowed size.
+    BlockPayloadTooLarge { size: usize },
+    /// Block contains too many transactions.
+    TooManyTransactions { count: usize },
 }
 
 impl fmt::Display for BlockValidationError {
@@ -93,6 +106,15 @@ impl fmt::Display for BlockValidationError {
             BlockValidationError::ValueOverflow { tx_index } => {
                 write!(f, "tx {tx_index} output values overflow")
             }
+            BlockValidationError::TxTooLarge { tx_index, size } => {
+                write!(f, "tx {tx_index} size {size} exceeds limit {MAX_TX_SIZE}")
+            }
+            BlockValidationError::BlockPayloadTooLarge { size } => {
+                write!(f, "block payload size {size} exceeds limit {MAX_BLOCK_PAYLOAD_SIZE}")
+            }
+            BlockValidationError::TooManyTransactions { count } => {
+                write!(f, "block has {count} transactions, limit is {MAX_TXS_PER_BLOCK}")
+            }
         }
     }
 }
@@ -102,7 +124,13 @@ impl std::error::Error for BlockValidationError {}
 /// Run the structural (context-free) checks over a block payload. This is the
 /// standalone form of what [`TxStructureValidator`] runs at insert time.
 pub fn validate_block_payload(payload: &[u8]) -> Result<(), BlockValidationError> {
+    if payload.len() > MAX_BLOCK_PAYLOAD_SIZE {
+        return Err(BlockValidationError::BlockPayloadTooLarge { size: payload.len() });
+    }
     let txs = decode_block_payload(payload).map_err(BlockValidationError::Payload)?;
+    if txs.len() > MAX_TXS_PER_BLOCK {
+        return Err(BlockValidationError::TooManyTransactions { count: txs.len() });
+    }
     for (i, tx) in txs.iter().enumerate() {
         validate_tx_structure(i, tx)?;
     }
@@ -111,6 +139,11 @@ pub fn validate_block_payload(payload: &[u8]) -> Result<(), BlockValidationError
 
 /// Structural checks for a single transaction at position `index` in its block.
 fn validate_tx_structure(index: usize, tx: &Transaction) -> Result<(), BlockValidationError> {
+    let tx_size = tx.encode().len();
+    if tx_size > MAX_TX_SIZE {
+        return Err(BlockValidationError::TxTooLarge { tx_index: index, size: tx_size });
+    }
+
     if tx.is_coinbase() {
         // A coinbase (no inputs) may only be the first transaction. This also
         // rejects a second coinbase, which would land at index != 0.
@@ -260,6 +293,46 @@ mod tests {
         assert_eq!(
             validate_block_payload(&payload),
             Err(BlockValidationError::ValueOverflow { tx_index: 0 })
+        );
+    }
+
+    #[test]
+    fn tx_too_large_is_rejected() {
+        let kp = KeyPair::from_u64(1);
+        // Create a transaction with a huge tag to exceed MAX_TX_SIZE
+        let huge_tag = vec![0u8; MAX_TX_SIZE + 100];
+        let large_tx = Transaction::signed(&[(coin(7), &kp)], vec![TxOutput::new(5, addr(2))], huge_tag);
+        let payload = encode_block_payload(&[large_tx]);
+        assert_eq!(
+            validate_block_payload(&payload),
+            Err(BlockValidationError::TxTooLarge { tx_index: 0, size: large_tx.encode().len() })
+        );
+    }
+
+    #[test]
+    fn block_payload_too_large_is_rejected() {
+        let kp = KeyPair::from_u64(1);
+        let huge_tag = vec![0u8; MAX_BLOCK_PAYLOAD_SIZE + 100];
+        let large_tx = Transaction::signed(&[(coin(7), &kp)], vec![TxOutput::new(5, addr(2))], huge_tag);
+        let payload = encode_block_payload(&[large_tx]);
+        assert_eq!(
+            validate_block_payload(&payload),
+            Err(BlockValidationError::BlockPayloadTooLarge { size: payload.len() })
+        );
+    }
+
+    #[test]
+    fn too_many_transactions_is_rejected() {
+        let kp = KeyPair::from_u64(1);
+        let txs: Vec<Transaction> = (0..MAX_TXS_PER_BLOCK + 10)
+            .map(|i| {
+                Transaction::signed(&[(coin(i as u8), &kp)], vec![TxOutput::new(5, addr(2))], vec![i as u8])
+            })
+            .collect();
+        let payload = encode_block_payload(&txs);
+        assert_eq!(
+            validate_block_payload(&payload),
+            Err(BlockValidationError::TooManyTransactions { count: txs.len() })
         );
     }
 }
