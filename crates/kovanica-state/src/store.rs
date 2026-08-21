@@ -12,12 +12,12 @@ use std::path::Path;
 
 use kovanica_dag::{decode_block, encode_block, Block, SnapshotError};
 
-use crate::ledger::{Ledger, LedgerError, LedgerSnapshotError};
+use crate::ledger::{Ledger, LedgerError, LedgerSnapshotError, HalvingSchedule, DEFAULT_HALVING_ERA};
 
 /// Magic prefix identifying a Kovanica ledger log (`"KVLF"`).
 const MAGIC: [u8; 4] = *b"KVLF";
 /// Log format version. Bump on any incompatible framing change.
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 /// Refuse a single on-disk record larger than this.
 const MAX_RECORD: usize = 16 * 1024 * 1024;
 
@@ -77,7 +77,8 @@ impl LedgerStore {
             .open(path)?;
         file.write_all(&MAGIC)?;
         file.write_all(&VERSION.to_le_bytes())?;
-        file.write_all(&ledger.subsidy().to_le_bytes())?;
+        file.write_all(&ledger.schedule().genesis_subsidy.to_le_bytes())?;
+        file.write_all(&ledger.schedule().halving_era.to_le_bytes())?;
         file.write_all(&ledger.dag().k().to_le_bytes())?;
         for id in ledger.dag().linearize() {
             let block = ledger.dag().block(&id).expect("linearized id is present");
@@ -98,19 +99,27 @@ impl LedgerStore {
         let mut ver = [0u8; 2];
         file.read_exact(&mut ver).map_err(map_header_eof)?;
         let version = u16::from_le_bytes(ver);
-        if version != VERSION {
+        if version > VERSION {
             return Err(StoreError::UnsupportedVersion(version));
         }
         let mut sub = [0u8; 8];
         file.read_exact(&mut sub).map_err(map_header_eof)?;
         let subsidy = u64::from_le_bytes(sub);
+        let halving_era = if version >= 2 {
+            let mut era_buf = [0u8; 8];
+            file.read_exact(&mut era_buf).map_err(map_header_eof)?;
+            u64::from_le_bytes(era_buf)
+        } else {
+            DEFAULT_HALVING_ERA
+        };
         let mut kbuf = [0u8; 2];
         file.read_exact(&mut kbuf).map_err(map_header_eof)?;
         let k = u16::from_le_bytes(kbuf);
 
         let genesis = read_record(&mut file)?.ok_or(StoreError::Truncated)?;
         let genesis_txs = kovanica_dag_payload(&genesis).map_err(StoreError::Replay)?;
-        let mut ledger = Ledger::new(k, subsidy, &genesis_txs)
+        let schedule = HalvingSchedule::new(subsidy, halving_era);
+        let mut ledger = Ledger::new(k, schedule, &genesis_txs)
             .map_err(|e| StoreError::Replay(map_genesis(e)))?;
         while let Some(block) = read_record(&mut file)? {
             let txs = kovanica_dag_payload(&block).map_err(StoreError::Replay)?;
