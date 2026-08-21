@@ -12,12 +12,13 @@
 
 use kovanica_dag::DagError;
 use kovanica_state::{
-    apply_dag, Address, KeyPair, Ledger, LedgerError, LedgerInsertError, OutPoint, Transaction,
-    TxOutput, UtxoSet,
+    HalvingSchedule, DEFAULT_HALVING_ERA, apply_dag, Address, KeyPair, Ledger, LedgerError,
+    LedgerInsertError, OutPoint, Transaction, TxOutput, UtxoSet,
 };
 
 const K: u16 = 3;
 const SUBSIDY: u64 = 1_000;
+const SCHEDULE: HalvingSchedule = HalvingSchedule::new(SUBSIDY, DEFAULT_HALVING_ERA);
 
 /// A ledger whose genesis coinbase mints `funding` to `owner`. Returns the
 /// ledger and the outpoint of the minted coinbase output.
@@ -27,7 +28,7 @@ fn funded_ledger(owner: &KeyPair, funding: u64) -> (Ledger, OutPoint) {
         b"genesis".to_vec(),
     );
     let coin = OutPoint::new(coinbase.id(), 0);
-    let ledger = Ledger::new(K, SUBSIDY, &[coinbase]).expect("valid genesis");
+    let ledger = Ledger::new(K, SCHEDULE, &[coinbase]).expect("valid genesis");
     (ledger, coin)
 }
 

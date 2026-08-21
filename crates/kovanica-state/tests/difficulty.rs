@@ -8,10 +8,11 @@
 //! enters the DAG — the difficulty check surfaces as a `LedgerInsertError::Dag`.
 
 use kovanica_dag::{DagError, Retarget};
-use kovanica_state::{Ledger, LedgerInsertError, Transaction, TxOutput};
+use kovanica_state::{HalvingSchedule, DEFAULT_HALVING_ERA, Ledger, LedgerInsertError, Transaction, TxOutput};
 
 const K: u16 = 3;
 const SUBSIDY: u64 = 1_000;
+const SCHEDULE: HalvingSchedule = HalvingSchedule::new(SUBSIDY, DEFAULT_HALVING_ERA);
 
 fn retarget() -> Retarget {
     Retarget {
@@ -31,7 +32,7 @@ fn difficulty_ledger() -> Ledger {
         )],
         b"genesis".to_vec(),
     );
-    let mut ledger = Ledger::new(K, SUBSIDY, &[coinbase]).expect("valid genesis");
+    let mut ledger = Ledger::new(K, SCHEDULE, &[coinbase]).expect("valid genesis");
     ledger.set_difficulty(retarget());
     ledger
 }

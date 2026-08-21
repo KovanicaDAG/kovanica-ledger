@@ -3,11 +3,13 @@
 //! state, and every block's view state — is identical to the original.
 
 use kovanica_state::{
-    Address, KeyPair, Ledger, LedgerSnapshotError, OutPoint, Transaction, TxOutput, UtxoSet,
+    Address, HalvingSchedule, DEFAULT_HALVING_ERA, KeyPair, Ledger, LedgerSnapshotError, OutPoint,
+    Transaction, TxOutput, UtxoSet,
 };
 
 const K: u16 = 3;
 const SUBSIDY: u64 = 1_000;
+const SCHEDULE: HalvingSchedule = HalvingSchedule::new(SUBSIDY, DEFAULT_HALVING_ERA);
 
 fn snapshot(utxo: &UtxoSet) -> Vec<(OutPoint, u64, Address)> {
     let mut rows: Vec<(OutPoint, u64, Address)> =
@@ -27,7 +29,7 @@ fn build_ledger() -> Ledger {
         b"genesis".to_vec(),
     );
     let coin = OutPoint::new(coinbase.id(), 0);
-    let mut ledger = Ledger::new(K, SUBSIDY, &[coinbase]).unwrap();
+    let mut ledger = Ledger::new(K, SCHEDULE, &[coinbase]).unwrap();
     let genesis = ledger.genesis();
 
     // alice → bob (300) with 200 change back to alice.

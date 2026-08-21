@@ -6,11 +6,13 @@
 //! follows the selected tip, so re-orgs above the finality point are implicit).
 
 use kovanica_state::{
-    apply_dag, KeyPair, Ledger, LedgerInsertError, OutPoint, Transaction, TxOutput,
+    apply_dag, HalvingSchedule, DEFAULT_HALVING_ERA, KeyPair, Ledger, LedgerInsertError,
+    OutPoint, Transaction, TxOutput,
 };
 
 const K: u16 = 3;
 const SUBSIDY: u64 = 1_000;
+const SCHEDULE: HalvingSchedule = HalvingSchedule::new(SUBSIDY, DEFAULT_HALVING_ERA);
 
 /// A ledger with a genesis coinbase minting `funding` to actor 1; returns the
 /// ledger and the coinbase outpoint.
@@ -20,7 +22,7 @@ fn funded(finality_depth: u64, funding: u64) -> (Ledger, OutPoint) {
         b"genesis".to_vec(),
     );
     let coin = OutPoint::new(coinbase.id(), 0);
-    let ledger = Ledger::with_finality(K, SUBSIDY, &[coinbase], finality_depth).unwrap();
+    let ledger = Ledger::with_finality(K, SCHEDULE, &[coinbase], finality_depth).unwrap();
     (ledger, coin)
 }
 

@@ -3,10 +3,11 @@
 
 use std::fs;
 
-use kovanica_state::{KeyPair, Ledger, LedgerStore, OutPoint, Transaction, TxOutput};
+use kovanica_state::{HalvingSchedule, DEFAULT_HALVING_ERA, KeyPair, Ledger, LedgerStore, OutPoint, Transaction, TxOutput};
 
 const K: u16 = 3;
 const SUBSIDY: u64 = 1_000;
+const SCHEDULE: HalvingSchedule = HalvingSchedule::new(SUBSIDY, DEFAULT_HALVING_ERA);
 
 fn tmp(name: &str) -> String {
     let path = std::env::temp_dir().join(format!("kovanica-log-{name}-{}", std::process::id()));
@@ -22,7 +23,7 @@ fn build() -> Ledger {
         b"genesis".to_vec(),
     );
     let coin = OutPoint::new(coinbase.id(), 0);
-    let mut ledger = Ledger::new(K, SUBSIDY, &[coinbase]).unwrap();
+    let mut ledger = Ledger::new(K, SCHEDULE, &[coinbase]).unwrap();
     let genesis = ledger.genesis();
     let pay = Transaction::signed(
         &[(coin, &alice)],
@@ -64,7 +65,7 @@ fn append_extends_the_log_without_rewriting() {
         b"genesis".to_vec(),
     );
     let coin = OutPoint::new(coinbase.id(), 0);
-    let mut ledger = Ledger::new(K, SUBSIDY, &[coinbase]).unwrap();
+    let mut ledger = Ledger::new(K, SCHEDULE, &[coinbase]).unwrap();
     let mut store = LedgerStore::create(&path, &ledger).unwrap();
     let size_after_genesis = fs::metadata(&path).unwrap().len();
 
