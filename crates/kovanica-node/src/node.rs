@@ -299,11 +299,18 @@ impl Node {
     /// genesis subsidy cap). Coinbase still cannot exceed `ledger.subsidy()`.
     pub fn issuance(&self) -> Result<u64, NodeError> {
         let ledger = self.ledger()?;
-        let tip = ledger.dag().selected_tip();
-        let height = ledger.schedule().subsidy_at(ledger.dag().len() as u64);
-        // Use the schedule's subsidy_at based on the selected tip's height
-        // The schedule already computes this correctly
         Ok(ledger.subsidy())
+    }
+
+    /// Compute the subsidy at a given height (height 0 = genesis).
+    /// `cap` is the genesis subsidy. Halving era is `HALVING_ERA` (1000 blocks).
+    pub fn issuance_at(cap: u64, height: u64) -> u64 {
+        let era = height / HALVING_ERA;
+        if era >= 63 {
+            0
+        } else {
+            cap >> era
+        }
     }
 
     pub(crate) fn ledger(&self) -> Result<&Ledger, NodeError> {
