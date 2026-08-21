@@ -65,6 +65,7 @@ struct Explorer {
     listen: Option<TcpListener>,
     listen_addr: String,
     peers: Vec<String>,
+    origins: HashMap<String, u64>,
 }
 
 impl Explorer {
@@ -83,6 +84,7 @@ impl Explorer {
             listen: None,
             listen_addr: String::new(),
             peers: Vec::new(),
+            origins: HashMap::new(),
         }
     }
 
@@ -175,6 +177,7 @@ impl Explorer {
             listen,
             listen_addr,
             peers,
+            origins: load_origins(),
         };
         app.sync_peers(Duration::from_secs(3), true);
         app
@@ -331,6 +334,50 @@ fn env_off(v: &str) -> bool {
     matches!(v, "" | "0" | "off" | "none" | "false" | "FALSE")
 }
 
+fn origins_path() -> PathBuf {
+    data_dir().join("origins.txt")
+}
+
+fn load_origins() -> HashMap<String, u64> {
+    let mut map = HashMap::new();
+    let Ok(text) = fs::read_to_string(origins_path()) else {
+        return map;
+    };
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(iso) = parts.next() else {
+            continue;
+        };
+        let Some(n) = parts.next().and_then(|s| s.parse().ok()) else {
+            continue;
+        };
+        if iso.len() == 3 && iso.chars().all(|c| c.is_ascii_alphabetic()) {
+            map.insert(iso.to_ascii_uppercase(), n);
+        }
+    }
+    map
+}
+
+fn save_origins(map: &HashMap<String, u64>) {
+    let mut rows: Vec<_> = map.iter().collect();
+    rows.sort_by(|a, b| a.0.cmp(b.0));
+    let body: String = rows
+        .into_iter()
+        .map(|(k, v)| format!("{k} {v}\n"))
+        .collect();
+    let _ = fs::create_dir_all(data_dir());
+    let _ = fs::write(origins_path(), body);
+}
+
+fn origins_json(map: &HashMap<String, u64>) -> String {
+    let mut rows: Vec<_> = map.iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let items = rows
+        .into_iter()
+        .map(|(iso, n)| format!("{{\"iso3\":{},\"pulses\":{}}}", jstr(iso), n));
+    format!("{{\"pulses\":{}}}", jarr(items))
+}
+
 fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -439,6 +486,14 @@ fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
             jstr(P2P_BOOTSTRAP)
         );
         return respond(&mut stream, 200, "application/json", body.as_bytes());
+    }
+    if method == "GET" && path == "/api/origins" {
+        return respond(
+            &mut stream,
+            200,
+            "application/json",
+            origins_json(&app.origins).as_bytes(),
+        );
     }
     if method == "GET" && path == "/api/blocks" {
         if let Some(n) = app.mesh.node(&app.selected) {
@@ -556,6 +611,24 @@ fn dispatch(
             }
             wipe_data();
             *app = Explorer::boot_persist();
+        }
+        "origin" => {
+            let iso = q.get("iso3").ok_or("iso3 required")?;
+            if iso.len() != 3 || !iso.chars().all(|c| c.is_ascii_alphabetic()) {
+                return Err("iso3 required".into());
+            }
+            let code = iso.to_ascii_uppercase();
+            let pulses = {
+                let n = app.origins.entry(code.clone()).or_insert(0);
+                *n = n.saturating_add(1);
+                *n
+            };
+            save_origins(&app.origins);
+            return Ok(format!(
+                "{{\"ok\":true,\"iso3\":{},\"pulses\":{}}}",
+                jstr(&code),
+                pulses
+            ));
         }
         "prepare" => {
             let from = parse_addr(q.get("from").ok_or("from address required")?)?;
@@ -1140,5 +1213,19 @@ mod tests {
         assert!(env_off("0"));
         assert!(!env_off(P2P_LISTEN_DEFAULT));
         assert_eq!(P2P_BOOTSTRAP, "explorer.kovanica.online:9000");
+    }
+
+    #[test]
+    fn origin_pulse_increments_and_lists() {
+        let mut app = Explorer::boot();
+        let mut q = std::collections::HashMap::new();
+        q.insert("iso3".into(), "hrv".into());
+        let body = dispatch(&mut app, "origin", &q).unwrap();
+        assert!(body.contains("HRV"));
+        assert!(body.contains("\"pulses\":1"));
+        let listed = origins_json(&app.origins);
+        assert!(listed.contains("HRV"));
+        let bad = dispatch(&mut app, "origin", &std::collections::HashMap::new());
+        assert!(bad.is_err());
     }
 }
