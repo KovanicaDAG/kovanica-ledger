@@ -14,7 +14,7 @@ Public BlockDAG testnet. Native token **KVNC** (8 decimals).
 | k | 3 (GHOSTDAG) |
 | PoW | on (`KOVANICA_POW=1`) |
 | P2P | **TCP only** `KOVANICA_LISTEN` (default `0.0.0.0:9000`) |
-| Bootstrap | `KOVANICA_PEERS=explorer.kovanica.online:9000` |
+| Bootstrap | DNS-only `seed.kovanica.online:9000` (not the Cloudflare hostname) |
 
 Live genesis and tip: `GET https://explorer.kovanica.online/api/head`  
 P2P status on a running node: `GET /api/p2p`  
@@ -23,6 +23,11 @@ Bootstrap blob: `GET https://explorer.kovanica.online/api/bootstrap`
 
 There is no second network path. libp2p / 30333 was removed: it bound a port
 and never gossiped blocks.
+
+`explorer.kovanica.online` is orange-cloud. TCP 9000 never reaches the seed
+through that name. Grey-cloud `seed.kovanica.online` (or the origin IP) is the
+peer address clones should dial. The seed itself keeps `KOVANICA_PEERS=off`.
+
 
 ## Tokenomics
 
