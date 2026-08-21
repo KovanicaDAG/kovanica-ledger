@@ -226,6 +226,7 @@ impl Explorer {
             listen_addr,
             peers,
             origins: load_origins(),
+            ws_clients: Arc::new(Mutex::new(Vec::new())),
         };
         app.sync_peers(Duration::from_secs(3), true);
         app
