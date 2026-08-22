@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::Duration;
 
-use kovanica_node::{net, Node};
+use kovanica_node::{net, Node, p2p::Mesh};
 
 /// A node with the standard genesis (mints 1000 to actor 1). All nodes in a test
 /// share this genesis, since it is deterministic.
@@ -145,92 +145,52 @@ fn tcp_exchange_merges_divergent_chains() {
 }
 
 #[test]
-fn headers_first_sync_converges_two_nodes() {
-    // Server node has some blocks; a client syncs via headers-first protocol.
-    let mut server = genesis_with_blocks(&[(1, 400, 2), (1, 100, 3)]);
+fn mesh_sync_headers_first_converges_two_nodes() {
+    // In-process: use Mesh to sync headers-first between two nodes.
+    let mut mesh = Mesh::new();
+    mesh.add("server", genesis_with_blocks(&[(1, 400, 2), (1, 100, 3)]));
+    mesh.add("client", genesis_node());
 
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
+    // Sync from server to client
+    let applied = mesh.sync_headers_first("server", "client").unwrap();
+    assert!(applied > 0, "at least one block should be applied");
 
-    // Server side: serve headers-first on another thread
-    let mut server_node = genesis_with_blocks(&[(1, 400, 2), (1, 100, 3)]);
-    let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        net::serve_headers_first(&mut stream, &mut server_node, Duration::from_secs(2)).unwrap();
-    });
-
-    // Client side: headers-first sync
-    let mut client = genesis_node();
-    let stats =
-        net::sync_headers_first(&addr.to_string(), &mut client, Duration::from_secs(2)).unwrap();
-    handle.join().unwrap();
-
-    assert!(
-        stats.bodies_applied > 0,
-        "at least one body should be applied"
-    );
-    assert_eq!(client.balance(&Node::address(2)).unwrap(), 400);
-    assert_eq!(client.balance(&Node::address(3)).unwrap(), 100);
-    // Client should now match server's state (one-way sync)
+    let client_node = mesh.node("client").unwrap();
+    assert_eq!(client_node.balance(&Node::address(2)).unwrap(), 400);
+    assert_eq!(client_node.balance(&Node::address(3)).unwrap(), 100);
     assert_eq!(
-        client.selected_tip().unwrap(),
-        server.selected_tip().unwrap()
+        client_node.selected_tip().unwrap(),
+        mesh.node("server").unwrap().selected_tip().unwrap()
     );
 }
 
 #[test]
-fn headers_first_sync_bidirectional_merges_divergent_chains() {
-    // Two nodes with diverging chains do a bidirectional headers-first sync and converge.
-    let mut server = genesis_with_blocks(&[(1, 400, 2)]); // server: 1->2
-    let mut client = genesis_with_blocks(&[(1, 300, 3)]); // client: 1->3 (conflicts with server)
+fn mesh_sync_headers_first_bidirectional_merges_divergent_chains() {
+    // In-process: two nodes with diverging chains sync bidirectionally and converge.
+    let mut mesh = Mesh::new();
+    mesh.add("server", genesis_with_blocks(&[(1, 400, 2)]));
+    mesh.add("client", genesis_with_blocks(&[(1, 300, 3)]));
 
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
+    // First sync: server -> client
+    let applied1 = mesh.sync_headers_first("server", "client").unwrap();
+    assert!(applied1 > 0);
+    let client_tips = mesh.node("client").unwrap().tips().unwrap().len();
+    assert_eq!(client_tips, 1); // client now has server's chain
 
-    // Server serves headers-first
-    let mut server_node = genesis_with_blocks(&[(1, 400, 2)]);
-    let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        net::serve_headers_first(&mut stream, &mut server_node, Duration::from_secs(2)).unwrap();
-    });
+    // Second sync: client -> server (client now has both blocks)
+    let applied2 = mesh.sync_headers_first("client", "server").unwrap();
+    assert!(applied2 > 0);
 
-    // Client syncs headers-first
-    let stats =
-        net::sync_headers_first(&addr.to_string(), &mut client, Duration::from_secs(2)).unwrap();
-    handle.join().unwrap();
+    let server_tips = mesh.node("server").unwrap().tips().unwrap().len();
+    let client_tips = mesh.node("client").unwrap().tips().unwrap().len();
+    assert_eq!(server_tips, 2);
+    assert_eq!(client_tips, 2);
 
-    assert!(stats.bodies_applied > 0);
-    // Client now has server's blocks (1 tip)
-    assert_eq!(client.tips().unwrap().len(), 1);
-
-    // Now do the reverse: client serves, server syncs
-    let listener2 = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr2 = listener2.local_addr().unwrap();
-    // Create a node representing the client's state (both blocks)
-    let mut client_node = genesis_with_blocks(&[(1, 400, 2), (1, 300, 3)]);
-    let handle2 = thread::spawn(move || {
-        let (mut stream, _) = listener2.accept().unwrap();
-        net::serve_headers_first(&mut stream, &mut client_node, Duration::from_secs(2)).unwrap();
-    });
-
-    let stats2 =
-        net::sync_headers_first(&addr2.to_string(), &mut server, Duration::from_secs(2)).unwrap();
-    handle2.join().unwrap();
-
-    assert!(stats2.bodies_applied > 0);
-    // Now both nodes should have both blocks (parallel tips)
-    assert_eq!(server.tips().unwrap().len(), 2);
-    assert_eq!(client.tips().unwrap().len(), 2);
-
-    // And they should agree on the final state
-    let s2 = server.balance(&Node::address(2)).unwrap();
-    let s3 = server.balance(&Node::address(3)).unwrap();
-    let c2 = client.balance(&Node::address(2)).unwrap();
-    let c3 = client.balance(&Node::address(3)).unwrap();
-    assert_eq!(
-        (s2, s3),
-        (c2, c3),
-        "nodes disagree after bidirectional headers-first sync"
-    );
+    // Both agree on final state
+    let s2 = mesh.node("server").unwrap().balance(&Node::address(2)).unwrap();
+    let s3 = mesh.node("server").unwrap().balance(&Node::address(3)).unwrap();
+    let c2 = mesh.node("client").unwrap().balance(&Node::address(2)).unwrap();
+    let c3 = mesh.node("client").unwrap().balance(&Node::address(3)).unwrap();
+    assert_eq!((s2, s3), (c2, c3), "nodes disagree after bidirectional sync");
     assert!((s2 == 400 && s3 == 0) || (s2 == 0 && s3 == 300));
 }

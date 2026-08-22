@@ -404,7 +404,7 @@ consensus changes.
 Goal: survive growth. Sync that does not re-download the world; memory
 and disk that do not grow forever.
 
-- [ ] Headers-first sync: peers exchange tips/headers first, then fetch
+- [x] Headers-first sync: peers exchange tips/headers first, then fetch
       block bodies by hash on demand — replaces whole-dump exchange as the
       default catch-up path.
 - [ ] DAG-level pruning behind the reachability oracle (the item its
