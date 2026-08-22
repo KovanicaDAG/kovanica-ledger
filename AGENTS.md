@@ -384,13 +384,20 @@ consensus changes.
 
 - [ ] Arm auto-deploy: add `VPS_HOST` / `VPS_USERNAME` / `VPS_PRIVATE_KEY`
       repo secrets and set `DEPLOY_ENABLED=true`; verify a merge ships green.
-- [ ] Seed ops runbook: backup/restore of `data/`, restart drill, log
-      locations, what to check after a deploy (`api/head`, both listeners,
-      peer exchange).
-- [ ] kovanica-web loose ends: commit the pending `contract.ts` proxy change;
-      resolve the cors-proxy worker config (`zone_id`, route mismatch).
-- [ ] Show `kvnc…dag` addresses in the web wallet UI (nodes accept them
-      everywhere since Stage 0).
+      (Deploy script fixed to restart the real pm2 process; awaiting the
+      deploy key on the VPS + secrets.)
+- [x] Seed ops runbook: `OPERATIONS.md` — backup/restore of `data/`,
+      restart drill, post-deploy checks (`api/head`, both listeners,
+      peer exchange), log locations, network-marker semantics.
+- [x] Web proxy question resolved: kovanica-web reaches the explorer
+      **server-side** (`src/lib/api/upstream.server.ts`), so there is no
+      cross-origin problem to solve; the cors-proxy worker and the
+      `/proxy` path are dropped (kept only as an unused local folder).
+      Local kovanica-web/kovanica-node clones are stale snapshots of the
+      GitHub repos — GitHub is authoritative for those two.
+- [x] Show `kvnc…dag` addresses in the web wallet UI — shipped upstream
+      (kovanica-web `bcef5f0`: wallet displays kvnc, send accepts hex or
+      kvnc).
 
 ### Stage 2 — Scale & persistence
 

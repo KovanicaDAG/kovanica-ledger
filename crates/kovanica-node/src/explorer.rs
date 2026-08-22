@@ -343,7 +343,6 @@ fn line_mesh() -> Mesh {
 
 fn genesis_node() -> Node {
     let mut node = Node::new();
-    node.set_now_ms(1_700_000_000_000 + 1_000);
     node.genesis(3, GENESIS_SUBSIDY, GENESIS_PREMINE, 1)
         .expect("genesis");
     if env_flag("KOVANICA_POW", true) {
