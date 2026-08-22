@@ -273,7 +273,19 @@ is a library plus a binary (`serve`/`demo`).
 
 ---
 
-## Roadmap / next slices (in rough order)
+## Roadmap
+
+Work is organised in **stages**. Stage 0 is shipped history (kept for
+context); Stages 1–3 are the live plan, in order. Each stage should end
+testable and deployable on its own — do not start a stage while the
+previous one has open items without a written reason.
+
+### Stage 0 — Shipped: single-chain → BlockDAG testnet
+
+Everything below is deployed on `kovanica-testnet` (seed:
+`seed.kovanica.online:9000`, explorer: `explorer.kovanica.online`).
+CI gates every push (`fmt --check`, `clippy -D warnings`,
+`cargo test`) before deploy is allowed to run.
 
 - [x] Transactions + a UTXO state layer; apply state in linearized order (`kovanica-state`).
 - [x] Signatures (ed25519) for spend authorisation.
@@ -360,3 +372,54 @@ is a library plus a binary (`serve`/`demo`).
       default on): 0.01 KVNC per request, 40/day per address, persisted in
       `data/taps.txt`; plus `KOVANICA_MINE_SECS` for the public mine interval.
       Explorer addresses accept `kvnc…dag` or hex everywhere.
+- [x] CI gate + dual-stack P2P: every push runs `fmt --check`,
+      `clippy -D warnings`, `cargo test` before deploy may start (deploy job
+      additionally armed via a `DEPLOY_ENABLED` repo variable); the seed's
+      `[::]:P` listener binds with `IPV6_V6ONLY` so v4 and v6 coexist.
+
+### Stage 1 — Operations hardening
+
+Goal: make the running testnet trustworthy to operate day-to-day. No
+consensus changes.
+
+- [ ] Arm auto-deploy: add `VPS_HOST` / `VPS_USERNAME` / `VPS_PRIVATE_KEY`
+      repo secrets and set `DEPLOY_ENABLED=true`; verify a merge ships green.
+- [ ] Seed ops runbook: backup/restore of `data/`, restart drill, log
+      locations, what to check after a deploy (`api/head`, both listeners,
+      peer exchange).
+- [ ] kovanica-web loose ends: commit the pending `contract.ts` proxy change;
+      resolve the cors-proxy worker config (`zone_id`, route mismatch).
+- [ ] Show `kvnc…dag` addresses in the web wallet UI (nodes accept them
+      everywhere since Stage 0).
+
+### Stage 2 — Scale & persistence
+
+Goal: survive growth. Sync that does not re-download the world; memory
+and disk that do not grow forever.
+
+- [ ] Headers-first sync: peers exchange tips/headers first, then fetch
+      block bodies by hash on demand — replaces whole-dump exchange as the
+      default catch-up path.
+- [ ] DAG-level pruning behind the reachability oracle (the item its
+      incremental maintenance unlocked): bounded ancestor state, append-only
+      DAG with prunable payloads.
+- [ ] Finality checkpointing: persist the UTXO set at finality depth so a
+      restart replays only post-checkpoint blocks instead of all history.
+- [ ] Reachability interval-reindex amortisation tuning (open from Stage 0).
+
+### Stage 3 — Protocol evolution
+
+Goal: consensus-level features. Each item needs a written rationale
+naming the reference protocol (GHOSTDAG paper, Kaspa, PHANTOM §…) plus
+deterministic + adversarial tests per the conventions above.
+
+- [ ] VRF for leader selection / a randomness beacon (the standing TODO).
+- [ ] P2P hardening: per-peer rate limits on framed reads, duplicate-block
+      suppression metrics, peer scoring/banning.
+- [ ] Mempool policy upgrades: orphan-tx handling, fee-based eviction order.
+
+### Beyond
+
+Ideas parked until Stages 1–3 close: light clients / SPV-style proofs over
+the linearized chain, multi-seed discovery (DNS seeds / DHT), and anything
+the testnet teaches us it needs.
