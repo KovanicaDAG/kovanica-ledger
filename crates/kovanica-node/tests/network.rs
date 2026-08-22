@@ -86,3 +86,50 @@ fn tcp_pull_sync_converges_two_nodes() {
     assert_eq!(client.balance(&Node::address(2)).unwrap(), 400);
     assert_eq!(client.balance(&Node::address(3)).unwrap(), 100);
 }
+
+#[test]
+fn tcp_exchange_merges_divergent_chains() {
+    use std::io::Write;
+    use std::time::Duration;
+
+    let mut server = genesis_node();
+    server.send(1, 400, 2).unwrap();
+    let mut client = genesis_node();
+    client.send(1, 300, 3).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_bytes = net::encode_records(&server.export());
+    let client_bytes = net::encode_records(&client.export());
+
+    // Seed side: serve our dump, then read the client's reply — exactly what
+    // `serve_exchange` does on the explorer loop.
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(&server_bytes).unwrap();
+        stream.flush().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        net::read_records_from(&mut stream).unwrap()
+    });
+
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let from_server = net::read_records_from(&mut stream).unwrap();
+    stream.write_all(&client_bytes).unwrap();
+    stream.flush().unwrap();
+    let from_client = handle.join().unwrap();
+
+    for rec in from_server {
+        client.receive_block(rec).unwrap();
+    }
+    for rec in from_client {
+        server.receive_block(rec).unwrap();
+    }
+
+    assert_eq!(server.tips().unwrap().len(), 2);
+    assert_eq!(client.tips().unwrap().len(), 2);
+}

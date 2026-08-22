@@ -90,7 +90,7 @@ crates/
   kovanica-state/              UTXO ledger applied in GHOSTDAG order (second slice)
     src/
       lib.rs                   Crate docs + re-exports + an end-to-end doctest
-      keys.rs                  Address, KeyPair, verify() — ed25519 spend authorisation
+      keys.rs                  Address, KeyPair, verify() — ed25519 spend authorisation; Address::to_kvnc()/parse() human addresses (`kvnc…dag`, base58; parse accepts hex too)
       tx.rs                    Transaction/TxId/OutPoint/TxInput/TxOutput; canonical encoding; sighash
       utxo.rs                  UtxoSet: the unspent-output state, with balance/total_value
       ledger.rs                apply_block()/apply_dag() (batch) + Ledger (per-block state, stateful insert, snapshot, finality/pruning)
@@ -107,12 +107,12 @@ crates/
   kovanica-node/               Runnable node binary, mempool, and block gossip (third slice + multi-node)
     src/
       lib.rs                   Crate docs + re-exports + a doctest of the RPC
-      node.rs                  Node: Ledger + Mempool; genesis/send/pool/produce/balance/tips/save/load + gossip
+      node.rs                  Node: Ledger + Mempool; genesis/send/pool/produce/balance/tips/save/load + gossip; multi-input prepare_transfer/submit_signed (UTXOs accumulated largest-first, one signature attached to every input)
       mempool.rs               Mempool: pending txs, deterministic (id) ordering for block assembly
-      net.rs                   gossip() (in-process) + serve_blocks/pull_blocks (one-shot TCP sync)
+      net.rs                   gossip() (in-process) + serve_blocks/pull_blocks (one-shot TCP sync) + framed bidirectional exchange (pull_blocks_timeout/serve_exchange: read peer dump, apply, send own back; old one-way peers still work)
       p2p.rs                   Mesh: peer discovery (hello), delayed relay loop, block+tx flood
       relay.rs                 RelaySession: long-lived TCP framing of hello/block/tx
-      explorer.rs              self-hosted explorer: JSON API + static UI over Mesh
+      explorer.rs              self-hosted explorer: JSON API + static UI over Mesh (WebSocket /ws, TAP micro-faucet, dual-stack P2P listeners, KOVANICA_MINE_SECS interval)
       explorer.html            UI served by `kovanica-node explorer`
       main.rs                  Binary: `serve` (stdin/stdout REPL) and `demo` (scripted scenario)
     tests/
@@ -342,3 +342,21 @@ is a library plus a binary (`serve`/`demo`).
 - [x] WebSocket explorer (`/ws` endpoint in `explorer.rs`, `WsMsg` types)
 - [x] Live frontend WS client/hooks (`kovanica-web/src/lib/api/client.ts`: `wsClient`, `useWsMessage`, `useWsState`, `useWsBlocks`, `useWsTxs`)
 - [x] CORS proxy for live explorer (`/proxy` path on explorer.kovanica.online)
+- [x] Human addresses (`Address::to_kvnc`/`parse`, `kvnc…dag` base58 wrap over the
+      32 key bytes; parse also accepts 64-hex) — reconciled from the testnet
+      deployment snapshot so the canonical repo and deployed nodes share one
+      address rendering (`crates/kovanica-state/src/keys.rs`).
+- [x] Framed bidirectional TCP sync: `pull_blocks_timeout` reads a framed dump,
+      applies it, and writes its own pre-apply snapshot back; `serve_exchange`
+      mirrors that on the seed side (old one-way peers still work — reply
+      write failures are ignored). Replaces EOF-delimited one-shot pulls on
+      the explorer P2P loop, which now binds dual-stack listeners
+      (`0.0.0.0:P` + `[::]:P`) and exchanges instead of only serving.
+- [x] Multi-input transfers in `Node::prepare_transfer` (UTXOs accumulated
+      largest-first until they cover amount + fee; one signature attached to
+      every input) — no more spurious `InsufficientFunds` when the balance is
+      spread across many coinbases.
+- [x] TAP micro-faucet on the explorer (`POST /api/tap`, `KOVANICA_TAP=0|1`,
+      default on): 0.01 KVNC per request, 40/day per address, persisted in
+      `data/taps.txt`; plus `KOVANICA_MINE_SECS` for the public mine interval.
+      Explorer addresses accept `kvnc…dag` or hex everywhere.

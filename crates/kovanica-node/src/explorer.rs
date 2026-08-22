@@ -3,7 +3,6 @@
 //! [`Mesh`] / [`Node`] already computed.
 
 use base64::Engine;
-use sha1::Sha1;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
@@ -11,12 +10,12 @@ use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kovanica_dag::BlockId;
 use kovanica_state::{Address, Transaction};
 
-use crate::net::{encode_records, pull_blocks_timeout};
+use crate::net::{encode_records, pull_blocks_timeout, serve_exchange};
 use crate::node::{Node, HALVING_ERA};
 use crate::p2p::Mesh;
 
@@ -28,10 +27,12 @@ const ATOM: u64 = 100_000_000;
 const GENESIS_SUBSIDY: u64 = 50 * ATOM;
 const GENESIS_PREMINE: u64 = 50 * ATOM;
 const NETWORK: &str = "kovanica-testnet-1";
+const TAP_REWARD_ATOMS: u64 = ATOM / 100;
+const TAP_DAILY: u32 = 40;
 const ACTORS: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 /// Single P2P path: plaintext TCP. Not 80/443/3010/8080 and not libp2p :30333.
 const P2P_LISTEN_DEFAULT: &str = "0.0.0.0:9000";
-const P2P_BOOTSTRAP: &str = "explorer.kovanica.online:9000";
+const P2P_BOOTSTRAP: &str = "seed.kovanica.online:9000";
 
 /// WebSocket message types for real-time updates
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -40,7 +41,12 @@ enum WsMsg {
     #[serde(rename = "block")]
     Block { id: String, blue_score: u64 },
     #[serde(rename = "tx")]
-    Tx { id: String, from: String, to: String, amount: u64 },
+    Tx {
+        id: String,
+        from: String,
+        to: String,
+        amount: u64,
+    },
     #[serde(rename = "tip")]
     Tip { id: String, blue_score: u64 },
     #[serde(rename = "peer")]
@@ -81,15 +87,17 @@ struct Explorer {
     mesh: Mesh,
     selected: String,
     mining: bool,
+    mine_every: u64,
     ticks: u64,
     rotate: usize,
     faucet: bool,
     allow_reset: bool,
     operator: bool,
-    listen: Option<TcpListener>,
+    listen: Vec<TcpListener>,
     listen_addr: String,
     peers: Vec<String>,
     origins: HashMap<String, u64>,
+    taps: HashMap<String, (u64, u32)>,
     ws_clients: Arc<Mutex<Vec<Arc<Mutex<TcpStream>>>>>,
 }
 
@@ -101,15 +109,17 @@ impl Explorer {
             mesh,
             selected: "alpha".into(),
             mining: false,
+            mine_every: mine_every_ticks(),
             ticks: 0,
             rotate: 0,
             faucet: true,
             allow_reset: true,
             operator: true,
-            listen: None,
+            listen: Vec::new(),
             listen_addr: String::new(),
             peers: Vec::new(),
             origins: HashMap::new(),
+            taps: HashMap::new(),
             ws_clients: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -118,7 +128,7 @@ impl Explorer {
         self.mesh.tick();
         self.ticks += 1;
         self.tick_p2p();
-        if self.mining && self.ticks % 120 == 0 {
+        if self.mining && self.mine_every > 0 && self.ticks % self.mine_every == 0 {
             let names = self.mesh.names();
             if !names.is_empty() {
                 let name = &names[self.rotate % names.len()];
@@ -152,13 +162,24 @@ impl Explorer {
     }
 
     fn tick_p2p(&mut self) {
-        if let Some(listener) = self.listen.as_ref() {
-            if let Ok((mut stream, peer)) = listener.accept() {
-                if let Some(n) = self.mesh.node("alpha") {
-                    let bytes = encode_records(&n.export());
-                    let _ = stream.write_all(&bytes);
-                    let _ = stream.flush();
-                    eprintln!("kovanica p2p served {} bytes to {peer}", bytes.len());
+        let mut incoming = Vec::new();
+        for listener in &self.listen {
+            while let Ok((stream, peer)) = listener.accept() {
+                incoming.push((stream, peer));
+            }
+        }
+        for (mut stream, peer) in incoming {
+            if let Some(n) = self.mesh.node_mut("alpha") {
+                match serve_exchange(&mut stream, n, Duration::from_millis(800)) {
+                    Ok(got) => {
+                        eprintln!("kovanica p2p exchanged with {peer} (peer sent {got} records)");
+                        if got > 0 {
+                            persist_all(&self.mesh);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("kovanica p2p exchange {peer}: {e}");
+                    }
                 }
             }
         }
@@ -205,10 +226,11 @@ impl Explorer {
         persist_all(&mesh);
         let listen = bind_p2p();
         let listen_addr = listen
-            .as_ref()
-            .and_then(|l| l.local_addr().ok())
+            .iter()
+            .filter_map(|l| l.local_addr().ok())
             .map(|a| a.to_string())
-            .unwrap_or_default();
+            .collect::<Vec<_>>()
+            .join(",");
         let peers = peer_list();
         if !listen_addr.is_empty() || !peers.is_empty() {
             eprintln!("kovanica p2p listen={listen_addr} peers={peers:?}");
@@ -217,6 +239,7 @@ impl Explorer {
             mesh,
             selected: "alpha".into(),
             mining: env_flag("KOVANICA_MINE", false),
+            mine_every: mine_every_ticks(),
             ticks: 0,
             rotate: 0,
             faucet: env_flag("KOVANICA_FAUCET", false),
@@ -226,6 +249,7 @@ impl Explorer {
             listen_addr,
             peers,
             origins: load_origins(),
+            taps: load_taps(),
             ws_clients: Arc::new(Mutex::new(Vec::new())),
         };
         app.sync_peers(Duration::from_secs(3), true);
@@ -317,7 +341,8 @@ fn line_mesh() -> Mesh {
 fn genesis_node() -> Node {
     let mut node = Node::new();
     node.set_now_ms(1_700_000_000_000 + 1_000);
-    node.genesis(3, GENESIS_SUBSIDY, GENESIS_PREMINE, 1).expect("genesis");
+    node.genesis(3, GENESIS_SUBSIDY, GENESIS_PREMINE, 1)
+        .expect("genesis");
     if env_flag("KOVANICA_POW", true) {
         let _ = node.set_proof_of_work(true);
     }
@@ -329,6 +354,19 @@ fn env_flag(name: &str, default: bool) -> bool {
         Ok(v) => matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "on"),
         Err(_) => default,
     }
+}
+
+/// Explorer loop sleeps 40ms per tick.
+const TICK_MS: u64 = 40;
+/// Default public mine interval when `KOVANICA_MINE=1` (seconds).
+const MINE_SECS_DEFAULT: u64 = 120;
+
+fn mine_every_ticks() -> u64 {
+    let secs = std::env::var("KOVANICA_MINE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(MINE_SECS_DEFAULT);
+    (secs.saturating_mul(1000) / TICK_MS).max(1)
 }
 
 fn ensure_network() {
@@ -343,28 +381,35 @@ fn ensure_network() {
     }
 }
 
-fn bind_p2p() -> Option<TcpListener> {
+fn bind_p2p() -> Vec<TcpListener> {
     let raw = std::env::var("KOVANICA_LISTEN").unwrap_or_else(|_| P2P_LISTEN_DEFAULT.into());
     if env_off(&raw) {
         eprintln!("kovanica p2p listen disabled");
-        return None;
+        return Vec::new();
     }
-    match TcpListener::bind(&raw) {
-        Ok(listener) => {
-            if let Err(e) = listener.set_nonblocking(true) {
-                eprintln!("kovanica p2p listen {raw} nonblocking failed: {e}");
-                return None;
+    let mut addrs = vec![raw.clone()];
+    if let Some(port) = raw.strip_prefix("0.0.0.0:") {
+        addrs.push(format!("[::]:{port}"));
+    }
+    let mut out = Vec::new();
+    for addr in addrs {
+        match TcpListener::bind(&addr) {
+            Ok(listener) => {
+                if let Err(e) = listener.set_nonblocking(true) {
+                    eprintln!("kovanica p2p listen {addr} nonblocking failed: {e}");
+                    continue;
+                }
+                if let Ok(local) = listener.local_addr() {
+                    eprintln!("kovanica p2p listen {local}");
+                }
+                out.push(listener);
             }
-            if let Ok(local) = listener.local_addr() {
-                eprintln!("kovanica p2p listen {local}");
+            Err(e) => {
+                eprintln!("kovanica p2p listen {addr} failed: {e}");
             }
-            Some(listener)
-        }
-        Err(e) => {
-            eprintln!("kovanica p2p listen {raw} failed: {e}");
-            None
         }
     }
+    out
 }
 
 fn peer_list() -> Vec<String> {
@@ -416,6 +461,47 @@ fn save_origins(map: &HashMap<String, u64>) {
         .collect();
     let _ = fs::create_dir_all(data_dir());
     let _ = fs::write(origins_path(), body);
+}
+
+fn taps_path() -> PathBuf {
+    data_dir().join("taps.txt")
+}
+
+fn utc_day() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86_400)
+        .unwrap_or(0)
+}
+
+fn load_taps() -> HashMap<String, (u64, u32)> {
+    let mut map = HashMap::new();
+    let Ok(text) = fs::read_to_string(taps_path()) else {
+        return map;
+    };
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(addr) = parts.next() else { continue };
+        let Some(day) = parts.next().and_then(|s| s.parse().ok()) else {
+            continue;
+        };
+        let Some(n) = parts.next().and_then(|s| s.parse().ok()) else {
+            continue;
+        };
+        map.insert(addr.to_ascii_lowercase(), (day, n));
+    }
+    map
+}
+
+fn save_taps(map: &HashMap<String, (u64, u32)>) {
+    let mut rows: Vec<_> = map.iter().collect();
+    rows.sort_by(|a, b| a.0.cmp(b.0));
+    let body: String = rows
+        .into_iter()
+        .map(|(k, (d, n))| format!("{k} {d} {n}\n"))
+        .collect();
+    let _ = fs::create_dir_all(data_dir());
+    let _ = fs::write(taps_path(), body);
 }
 
 fn origins_json(map: &HashMap<String, u64>) -> String {
@@ -473,7 +559,10 @@ fn handle_websocket(app: &mut Explorer, mut stream: TcpStream, req: &str) -> std
     }
 
     // Unregister client
-    app.ws_clients.lock().unwrap().retain(|c| !Arc::ptr_eq(c, &client));
+    app.ws_clients
+        .lock()
+        .unwrap()
+        .retain(|c| !Arc::ptr_eq(c, &client));
     Ok(())
 }
 
@@ -506,7 +595,12 @@ fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
         return respond(&mut stream, 200, "text/html; charset=utf-8", UI.as_bytes());
     }
     if method == "GET" && path == "/bip39.txt" {
-        return respond(&mut stream, 200, "text/plain; charset=utf-8", BIP39.as_bytes());
+        return respond(
+            &mut stream,
+            200,
+            "text/plain; charset=utf-8",
+            BIP39.as_bytes(),
+        );
     }
     if method == "GET" && path == "/kovanica-explorer-wallet.patch" {
         let body = std::fs::read("/workspace/kovanica-explorer-wallet.patch")
@@ -520,7 +614,12 @@ fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
         );
     }
     if method == "GET" && path == "/docs" {
-        return respond(&mut stream, 200, "text/plain; charset=utf-8", DOCS.as_bytes());
+        return respond(
+            &mut stream,
+            200,
+            "text/plain; charset=utf-8",
+            DOCS.as_bytes(),
+        );
     }
     if method == "GET" && path == "/api/bootstrap" {
         let n = app.mesh.node(&app.selected);
@@ -607,22 +706,14 @@ fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
     }
     if method == "GET" && path == "/api/history" {
         match history_json(app, &query) {
-            Ok(body) => {
-                return respond(&mut stream, 200, "application/json", body.as_bytes())
-            }
-            Err(e) => {
-                return respond(&mut stream, 400, "text/plain; charset=utf-8", e.as_bytes())
-            }
+            Ok(body) => return respond(&mut stream, 200, "application/json", body.as_bytes()),
+            Err(e) => return respond(&mut stream, 400, "text/plain; charset=utf-8", e.as_bytes()),
         }
     }
     if method == "GET" && path == "/api/utxos" {
         match utxos_json(app, &query) {
-            Ok(body) => {
-                return respond(&mut stream, 200, "application/json", body.as_bytes())
-            }
-            Err(e) => {
-                return respond(&mut stream, 400, "text/plain; charset=utf-8", e.as_bytes())
-            }
+            Ok(body) => return respond(&mut stream, 200, "application/json", body.as_bytes()),
+            Err(e) => return respond(&mut stream, 400, "text/plain; charset=utf-8", e.as_bytes()),
         }
     }
     if method == "POST" && path.starts_with("/api/") {
@@ -633,11 +724,9 @@ fn handle(app: &mut Explorer, mut stream: TcpStream) -> std::io::Result<()> {
         match dispatch(app, action, &query) {
             Ok(body) => {
                 persist_all(&app.mesh);
-                return respond(&mut stream, 200, "application/json", body.as_bytes())
+                return respond(&mut stream, 200, "application/json", body.as_bytes());
             }
-            Err(e) => {
-                return respond(&mut stream, 400, "text/plain; charset=utf-8", e.as_bytes())
-            }
+            Err(e) => return respond(&mut stream, 400, "text/plain; charset=utf-8", e.as_bytes()),
         }
     }
     respond(&mut stream, 404, "text/plain; charset=utf-8", b"not found")
@@ -648,19 +737,20 @@ fn dispatch(
     action: &str,
     q: &std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
-    let node = q.get("node").cloned().unwrap_or_else(|| app.selected.clone());
+    let node = q
+        .get("node")
+        .cloned()
+        .unwrap_or_else(|| app.selected.clone());
     match action {
-        "produce" => {
-            match app.mesh.produce(&node).map_err(|e| e.to_string())? {
-                Some(_) => {}
-                None => {
-                    if !app.operator {
-                        return Err("mempool empty".into());
-                    }
-                    app.mesh.produce_empty(&node).map_err(|e| e.to_string())?;
+        "produce" => match app.mesh.produce(&node).map_err(|e| e.to_string())? {
+            Some(_) => {}
+            None => {
+                if !app.operator {
+                    return Err("mempool empty".into());
                 }
+                app.mesh.produce_empty(&node).map_err(|e| e.to_string())?;
             }
-        }
+        },
         "empty" | "send" | "pool" | "parallel" | "fork" | "mining" | "miner" => {
             if !app.operator {
                 return Err("operator only".into());
@@ -704,7 +794,10 @@ fn dispatch(
                         .node_mut(&node)
                         .ok_or_else(|| "unknown node".to_string())?;
                     n.set_miner(addr);
-                    return Ok(format!("{{\"ok\":true,\"miner\":{}}}", jstr(&addr.to_hex())));
+                    return Ok(format!(
+                        "{{\"ok\":true,\"miner\":{}}}",
+                        jstr(&addr.to_hex())
+                    ));
                 }
                 _ => {}
             }
@@ -778,6 +871,43 @@ fn dispatch(
             return Ok(format!(
                 "{{\"ok\":true,\"block\":{}}}",
                 jstr(&block.to_string())
+            ));
+        }
+        "tap" => {
+            if !env_flag("KOVANICA_TAP", true) {
+                return Err("tap disabled".into());
+            }
+            let to = parse_addr(q.get("to").ok_or("to address required")?)?;
+            let want = parse_u64(q, "amount", TAP_REWARD_ATOMS)?.min(TAP_REWARD_ATOMS);
+            if want == 0 {
+                return Err("amount required".into());
+            }
+            let key = to.to_hex();
+            let day = utc_day();
+            let used = {
+                let e = app.taps.entry(key.clone()).or_insert((day, 0));
+                if e.0 != day {
+                    *e = (day, 0);
+                }
+                e.1
+            };
+            if used >= TAP_DAILY {
+                return Err("daily tap limit".into());
+            }
+            let sent = app
+                .mesh
+                .send_to(&node, 1, want, to)
+                .map_err(|e| e.to_string())?;
+            if let Some(e) = app.taps.get_mut(&key) {
+                e.1 = e.1.saturating_add(1);
+            }
+            save_taps(&app.taps);
+            app.mesh.drain(8);
+            return Ok(format!(
+                "{{\"ok\":true,\"block\":{},\"amount\":{},\"left\":{}}}",
+                jstr(&sent.to_string()),
+                want,
+                TAP_DAILY.saturating_sub(used + 1)
             ));
         }
         other => return Err(format!("unknown action {other}")),
@@ -884,11 +1014,7 @@ fn utxos_json(
 }
 
 fn parse_addr(s: &str) -> Result<Address, String> {
-    let bytes = hex::decode(s.trim()).map_err(|_| "address is not hex".to_string())?;
-    let arr: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| "address must be 32 bytes".to_string())?;
-    Ok(Address::from_bytes(arr))
+    Address::parse(s).map_err(|e| e.to_string())
 }
 
 fn parse_sig(s: &str) -> Result<[u8; 64], String> {
@@ -916,10 +1042,7 @@ fn split_query(target: &str) -> (&str, std::collections::HashMap<String, String>
             let mut map = std::collections::HashMap::new();
             for pair in q.split('&') {
                 if let Some((k, v)) = pair.split_once('=') {
-                    map.insert(
-                        k.to_string(),
-                        urlencoding_decode(v),
-                    );
+                    map.insert(k.to_string(), urlencoding_decode(v));
                 }
             }
             (path, map)
@@ -1018,7 +1141,10 @@ fn node_json(node: &Node) -> String {
         return "{\"blocks\":0,\"dag\":[],\"order\":[],\"tips\":[],\"pending\":[]}".into();
     };
     let dag = ledger.dag();
-    let selected_tip = node.selected_tip().map(|t| t.to_string()).unwrap_or_default();
+    let selected_tip = node
+        .selected_tip()
+        .map(|t| t.to_string())
+        .unwrap_or_default();
     let chain: Vec<BlockId> = dag.selected_chain();
     let chain_set: HashSet<BlockId> = chain.iter().copied().collect();
     let tip_id = node.selected_tip().ok();
@@ -1232,19 +1358,9 @@ mod tests {
         let mut app = Explorer::boot();
         app.mining = false;
         let founder = kovanica_state::KeyPair::from_u64(1).address();
-        let before = app
-            .mesh
-            .node("alpha")
-            .unwrap()
-            .balance(&founder)
-            .unwrap();
+        let before = app.mesh.node("alpha").unwrap().balance(&founder).unwrap();
         app.mesh.produce_empty("alpha").unwrap();
-        let after = app
-            .mesh
-            .node("alpha")
-            .unwrap()
-            .balance(&founder)
-            .unwrap();
+        let after = app.mesh.node("alpha").unwrap().balance(&founder).unwrap();
         assert_eq!(after, before + u128::from(GENESIS_SUBSIDY));
     }
 
@@ -1261,7 +1377,10 @@ mod tests {
                 .unwrap(),
             ATOM.into()
         );
-        assert_eq!(n.balance(&founder).unwrap(), u128::from(GENESIS_PREMINE - ATOM + GENESIS_SUBSIDY));
+        assert_eq!(
+            n.balance(&founder).unwrap(),
+            u128::from(GENESIS_PREMINE - ATOM + GENESIS_SUBSIDY)
+        );
     }
 
     #[test]
@@ -1294,6 +1413,41 @@ mod tests {
                 .balance(&to.address())
                 .unwrap(),
             ATOM.into()
+        );
+    }
+
+    #[test]
+    fn prepare_combines_two_coinbases_to_send_a_full_subsidy() {
+        use kovanica_state::KeyPair;
+
+        let mut app = Explorer::boot();
+        app.mining = false;
+        let from = KeyPair::from_u64(1);
+        let to = KeyPair::from_u64(9);
+        app.mesh.produce_empty("alpha").unwrap();
+        let prepared = app
+            .mesh
+            .node("alpha")
+            .unwrap()
+            .prepare_transfer(from.address(), GENESIS_SUBSIDY, to.address())
+            .unwrap();
+        assert!(
+            prepared.tx.inputs().len() >= 2,
+            "50 KVNC + fee needs two 50-KVNC coinbases"
+        );
+        let sig = from.sign(&prepared.sighash);
+        app.mesh
+            .submit_signed("alpha", from.address(), GENESIS_SUBSIDY, to.address(), sig)
+            .unwrap();
+        app.mesh.produce("alpha").unwrap();
+        app.mesh.drain(8);
+        assert_eq!(
+            app.mesh
+                .node("alpha")
+                .unwrap()
+                .balance(&to.address())
+                .unwrap(),
+            u128::from(GENESIS_SUBSIDY)
         );
     }
 
@@ -1334,7 +1488,7 @@ mod tests {
         assert!(env_off("none"));
         assert!(env_off("0"));
         assert!(!env_off(P2P_LISTEN_DEFAULT));
-        assert_eq!(P2P_BOOTSTRAP, "explorer.kovanica.online:9000");
+        assert_eq!(P2P_BOOTSTRAP, "seed.kovanica.online:9000");
     }
 
     #[test]
@@ -1349,5 +1503,53 @@ mod tests {
         assert!(listed.contains("HRV"));
         let bad = dispatch(&mut app, "origin", &std::collections::HashMap::new());
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn tap_credits_an_address_within_daily_cap() {
+        use kovanica_state::KeyPair;
+
+        let mut app = Explorer::boot();
+        app.mining = false;
+        let to = KeyPair::from_u64(9);
+        let mut q = std::collections::HashMap::new();
+        q.insert("to".into(), to.address().to_hex());
+        q.insert("amount".into(), TAP_REWARD_ATOMS.to_string());
+        let body = dispatch(&mut app, "tap", &q).unwrap();
+        assert!(body.contains("\"ok\":true"));
+        assert_eq!(
+            app.mesh
+                .node("alpha")
+                .unwrap()
+                .balance(&to.address())
+                .unwrap(),
+            u128::from(TAP_REWARD_ATOMS)
+        );
+        app.taps
+            .insert(to.address().to_hex().to_lowercase(), (utc_day(), TAP_DAILY));
+        let capped = dispatch(&mut app, "tap", &q).unwrap_err();
+        assert!(capped.contains("daily tap limit"));
+    }
+
+    #[test]
+    fn tap_accepts_kvnc_addresses() {
+        use kovanica_state::KeyPair;
+
+        let mut app = Explorer::boot();
+        app.mining = false;
+        let to = KeyPair::from_u64(11);
+        let mut q = std::collections::HashMap::new();
+        q.insert("to".into(), to.address().to_kvnc());
+        q.insert("amount".into(), "1".into());
+        let body = dispatch(&mut app, "tap", &q).unwrap();
+        assert!(body.contains("\"ok\":true"));
+        assert_eq!(
+            app.mesh
+                .node("alpha")
+                .unwrap()
+                .balance(&to.address())
+                .unwrap(),
+            1u128
+        );
     }
 }

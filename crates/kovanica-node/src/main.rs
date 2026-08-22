@@ -6,8 +6,8 @@
 //!   UI) on `addr`, default `0.0.0.0:8080`. TCP P2P (the only network path)
 //!   binds `KOVANICA_LISTEN` (default `0.0.0.0:9000`) in the same process.
 
-use std::io::{self, BufRead, Write};
 use kovanica_node::{rpc, Node};
+use std::io::{self, BufRead, Write};
 
 fn main() {
     let mode = std::env::args().nth(1);
@@ -29,10 +29,11 @@ fn main() {
             println!("  demo      run a scripted end-to-end scenario");
             println!("  explorer  HTTP UI + JSON API (default 0.0.0.0:8080)");
             println!("            TCP P2P on KOVANICA_LISTEN (default 0.0.0.0:9000)");
-            println!("            env: KOVANICA_DATA  KOVANICA_MINE=0|1  KOVANICA_FAUCET=0|1");
+            println!("            env: KOVANICA_DATA  KOVANICA_MINE=0|1  KOVANICA_MINE_SECS=120");
+            println!("                 KOVANICA_FAUCET=0|1  KOVANICA_TAP=0|1");
             println!("                 KOVANICA_ALLOW_RESET=0|1  KOVANICA_OPERATOR=0|1");
             println!("                 KOVANICA_LISTEN=0.0.0.0:9000   (off to disable)");
-            println!("                 KOVANICA_PEERS=explorer.kovanica.online:9000");
+            println!("                 KOVANICA_PEERS=seed.kovanica.online:9000");
             println!("                 KOVANICA_POW=0|1  (default 1, consensus hash target)");
             println!();
             println!("{}", rpc::HELP);
