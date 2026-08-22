@@ -15,7 +15,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use kovanica_dag::BlockId;
 use kovanica_state::{Address, Transaction};
 
-use crate::net::{encode_records, pull_blocks_timeout, serve_exchange};
+use crate::net::{
+    encode_records, pull_blocks_timeout, serve_exchange, serve_headers_first, sync_headers_first,
+};
 use crate::node::{Node, HALVING_ERA};
 use crate::p2p::Mesh;
 
@@ -172,15 +174,28 @@ impl Explorer {
         }
         for (mut stream, peer) in incoming {
             if let Some(n) = self.mesh.node_mut("alpha") {
-                match serve_exchange(&mut stream, n, Duration::from_millis(800)) {
-                    Ok(got) => {
-                        eprintln!("kovanica p2p exchanged with {peer} (peer sent {got} records)");
-                        if got > 0 {
-                            persist_all(&self.mesh);
-                        }
+                // Try headers-first sync serve first
+                match serve_headers_first(&mut stream, n, Duration::from_millis(800)) {
+                    Ok(()) => {
+                        eprintln!("kovanica p2p headers-first served {peer}");
+                        persist_all(&self.mesh);
                     }
                     Err(e) => {
-                        eprintln!("kovanica p2p exchange {peer}: {e}");
+                        // Fall back to legacy full-dump exchange
+                        stream.set_nonblocking(false).unwrap();
+                        match serve_exchange(&mut stream, n, Duration::from_millis(800)) {
+                            Ok(got) => {
+                                eprintln!(
+                                    "kovanica p2p exchanged with {peer} (peer sent {got} records)"
+                                );
+                                if got > 0 {
+                                    persist_all(&self.mesh);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("kovanica p2p exchange {peer}: {e}");
+                            }
+                        }
                     }
                 }
             }
@@ -197,14 +212,32 @@ impl Explorer {
         }
         if let Some(n) = self.mesh.node_mut("alpha") {
             for addr in peers {
-                match pull_blocks_timeout(&addr, n, timeout) {
-                    Ok(k) if k > 0 => {
-                        eprintln!("kovanica p2p pulled {k} records from {addr}");
+                // Try headers-first sync first (more efficient)
+                match sync_headers_first(&addr, n, timeout) {
+                    Ok(stats) if stats.bodies_applied > 0 => {
+                        eprintln!(
+                            "kovanica p2p headers-first sync from {addr}: {} headers, {} bodies applied",
+                            stats.headers_received, stats.bodies_applied
+                        );
                     }
                     Ok(_) => {}
                     Err(e) => {
+                        // Fall back to legacy full-dump pull
                         if log {
-                            eprintln!("kovanica p2p pull {addr}: {e}");
+                            eprintln!("kovanica p2p headers-first failed {addr}: {e}, falling back to full dump");
+                        }
+                        match pull_blocks_timeout(&addr, n, timeout) {
+                            Ok(k) if k > 0 => {
+                                eprintln!(
+                                    "kovanica p2p pulled {k} records from {addr} (full dump)"
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                if log {
+                                    eprintln!("kovanica p2p pull {addr}: {e}");
+                                }
+                            }
                         }
                     }
                 }

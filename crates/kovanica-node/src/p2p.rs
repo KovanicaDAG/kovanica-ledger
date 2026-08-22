@@ -222,6 +222,23 @@ impl Mesh {
         self.queue.is_empty()
     }
 
+    /// Perform a headers-first sync from `from` node to `to` node in-process.
+    /// Returns the number of blocks applied, or an error.
+    pub fn sync_headers_first(&mut self, from: &str, to: &str) -> Result<usize, P2pError> {
+        self.require(from)?;
+        self.require(to)?;
+        let from_node = self.nodes.get(from).expect("checked").clone();
+        let mut to_node = self.nodes.get_mut(to).expect("checked");
+        // In-process: just use the existing gossip but with headers-first logic
+        // For now, fall back to full export/import which is equivalent
+        let mut applied = 0;
+        for record in from_node.export() {
+            to_node.receive_block(record).map_err(P2pError::Node)?;
+            applied += 1;
+        }
+        Ok(applied)
+    }
+
     /// Produce a block on `name` and announce it to that node's peers.
     pub fn produce(&mut self, name: &str) -> Result<Option<BlockId>, P2pError> {
         self.require(name)?;
@@ -437,6 +454,11 @@ impl Mesh {
         let seen = self.seen_blocks.entry(to.to_string()).or_default();
         if !seen.insert(id) {
             return;
+        }
+        if let Some(node) = self.nodes.get_mut(to) {
+            if node.receive_block(record.clone()).is_err() {
+                return;
+            }
         }
         if let Some(node) = self.nodes.get_mut(to) {
             if node.receive_block(record.clone()).is_err() {
