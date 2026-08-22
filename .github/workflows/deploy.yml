@@ -48,6 +48,14 @@ jobs:
     # Arm by adding the VPS_* secrets AND setting the DEPLOY_ENABLED repo
     # variable to "true" (Settings -> Secrets and variables -> Actions ->
     # Variables). Until then this job is skipped instead of failing.
+    #
+    # Deploy is non-blocking: the Build/Test job above is the real CI gate.
+    # A deploy failure here (e.g. the VPS being temporarily unreachable over
+    # SSH) is surfaced as a warning on this job but does NOT fail the overall
+    # workflow run, so an infrastructure outage can't red a green build. The
+    # deploy is still attempted on every qualifying push and its failure stays
+    # visible in the job's logs and status.
+    continue-on-error: true
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/main'
