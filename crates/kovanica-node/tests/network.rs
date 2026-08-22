@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::Duration;
 
-use kovanica_node::{net, Node, p2p::Mesh};
+use kovanica_node::{net, p2p::Mesh, Node};
 
 /// A node with the standard genesis (mints 1000 to actor 1). All nodes in a test
 /// share this genesis, since it is deterministic.
@@ -187,10 +187,30 @@ fn mesh_sync_headers_first_bidirectional_merges_divergent_chains() {
     assert_eq!(client_tips, 2);
 
     // Both agree on final state
-    let s2 = mesh.node("server").unwrap().balance(&Node::address(2)).unwrap();
-    let s3 = mesh.node("server").unwrap().balance(&Node::address(3)).unwrap();
-    let c2 = mesh.node("client").unwrap().balance(&Node::address(2)).unwrap();
-    let c3 = mesh.node("client").unwrap().balance(&Node::address(3)).unwrap();
-    assert_eq!((s2, s3), (c2, c3), "nodes disagree after bidirectional sync");
+    let s2 = mesh
+        .node("server")
+        .unwrap()
+        .balance(&Node::address(2))
+        .unwrap();
+    let s3 = mesh
+        .node("server")
+        .unwrap()
+        .balance(&Node::address(3))
+        .unwrap();
+    let c2 = mesh
+        .node("client")
+        .unwrap()
+        .balance(&Node::address(2))
+        .unwrap();
+    let c3 = mesh
+        .node("client")
+        .unwrap()
+        .balance(&Node::address(3))
+        .unwrap();
+    assert_eq!(
+        (s2, s3),
+        (c2, c3),
+        "nodes disagree after bidirectional sync"
+    );
     assert!((s2 == 400 && s3 == 0) || (s2 == 0 && s3 == 300));
 }
