@@ -174,7 +174,7 @@ fn mesh_sync_headers_first_bidirectional_merges_divergent_chains() {
     let applied1 = mesh.sync_headers_first("server", "client").unwrap();
     assert!(applied1 > 0);
     let client_tips = mesh.node("client").unwrap().tips().unwrap().len();
-    assert_eq!(client_tips, 1); // client now has server's chain
+    assert_eq!(client_tips, 2); // client keeps its own block and gained server's
 
     // Second sync: client -> server (client now has both blocks)
     let applied2 = mesh.sync_headers_first("client", "server").unwrap();
