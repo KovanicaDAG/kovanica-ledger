@@ -582,6 +582,7 @@ pub struct SyncStats {
 /// 2. Compute missing ids = peer_ids \ our_ids.
 /// 3. Request headers for missing ids (in chunks if large).
 /// 4. For each batch of headers, request bodies by id and apply them in topo order.
+///
 /// Returns stats on success.
 pub fn sync_headers_first(
     addr: &str,
