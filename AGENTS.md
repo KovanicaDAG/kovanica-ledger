@@ -146,9 +146,12 @@ Not built yet (**TODO**): VRF and beyond. Update this tree when you add them.
   independent naive parent-walk, an "incremental oracle == freshly-built oracle
   after every insert" test, reindex-stressing scenarios (long chains, wide fans,
   deep+wide mixes), and the whole consensus/ledger suite (unchanged by the
-  cutover). Still open: incremental interval **reindexing amortisation** tuning
-  and the DAG-level (`past`-set) pruning the oracle unlocks. See `dag.rs` and
-  `reachability.rs` module docs.
+  cutover). Interval **reindexing amortisation** is now tuned: a `CHILD_RESERVE`
+  cap on each allocated child interval keeps a wide fan reindex-free (previously
+  `O(width^2)` reindex work) — an interval-numbering-only change guarded by the
+  correctness-parity + reindex-metric tests. Still open: the DAG-level
+  (`past`-set) pruning the oracle unlocks. See `dag.rs` and `reachability.rs`
+  module docs.
 - **In-memory working state**, with **replay-log persistence**: `Dag`/`Ledger`
   `write_snapshot`/`read_snapshot` serialise only `k`, the subsidy, and the blocks
   in topological order; loading replays inserts so all derived state (the
@@ -412,7 +415,14 @@ and disk that do not grow forever.
       DAG with prunable payloads.
 - [ ] Finality checkpointing: persist the UTXO set at finality depth so a
       restart replays only post-checkpoint blocks instead of all history.
-- [ ] Reachability interval-reindex amortisation tuning (open from Stage 0).
+- [x] Reachability interval-reindex amortisation tuning (open from Stage 0):
+      cap each freshly-allocated child interval at `CHILD_RESERVE` so a wide fan
+      no longer exhausts its parent's interval every ~log2(width) children —
+      turning the old `O(width^2)` reindex work for a broad fan into zero
+      reindexes below the ~8M-child threshold (chains/deep-wide unchanged).
+      Interval-numbering-only, so every reachability answer is identical;
+      `Dag::reachability_reindex_metrics()` exposes the reindex counters the
+      amortisation tests assert on.
 
 ### Stage 3 — Protocol evolution
 

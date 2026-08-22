@@ -335,6 +335,16 @@ impl Dag {
         self.reach.is_ancestor(ancestor, descendant)
     }
 
+    /// Amortisation metrics `(reindexes, relayout_touches)` of the backing
+    /// reachability oracle: how many interval reindexes its incremental
+    /// maintenance has performed and how many tree nodes those reindexes touched.
+    /// Pure bookkeeping that never affects a query answer — exposed so tests can
+    /// prove interval reindexing stays cheaply amortised (see
+    /// [`Reachability::reindex_metrics`]).
+    pub fn reachability_reindex_metrics(&self) -> (u64, u64) {
+        self.reach.reindex_metrics()
+    }
+
     /// `true` iff `a` and `b` are in each other's anticone: distinct blocks
     /// where neither is an ancestor of the other (they are "parallel").
     pub fn in_anticone(&self, a: &BlockId, b: &BlockId) -> bool {

@@ -35,7 +35,10 @@
 //! 1. **Tree interval allocation with reindexing.** The new block is carved a
 //!    sub-interval out of its selected parent's *remaining* capacity (Kaspa
 //!    splits the remaining span in half and gives the child the first half, so a
-//!    fresh leaf still gets room for its own future subtree). When the parent has
+//!    fresh leaf still gets room for its own future subtree — here additionally
+//!    **capped at [`CHILD_RESERVE`]** so a wide fan cannot exhaust a large parent
+//!    interval after only `log2(width)` children, the interval-reindex
+//!    amortisation tuning). When the parent has
 //!    no spare capacity, a **reindex** re-lays-out the minimal enclosing subtree
 //!    — the lowest ancestor whose interval is roomy enough — distributing that
 //!    interval among its children in proportion to subtree size (with slack), so
@@ -72,6 +75,32 @@ use crate::dag::Dag;
 /// arithmetic below never overflows.
 const ROOT_CAPACITY: u64 = u64::MAX >> 1;
 
+/// Amortisation cap on the interval span a single freshly-allocated child is
+/// handed (both in incremental allocation and in a reindex re-layout).
+///
+/// Kaspa's raw rule gives a new child **half** its parent's *remaining* interval,
+/// so that a leaf that later grows a subtree already has room. That is right for a
+/// chain (the one child inherits a geometric share and can grow deep), but
+/// pathological for a **wide fan**: under a single parent, every leaf child eats
+/// half the remaining span, so the parent exhausts its capacity after only
+/// `log2(width)` children — then each further child forces a reindex that
+/// re-lays-out *all* the parent's children (the relayout distributes the whole
+/// interval among them, leaving the parent almost no reserve, so it re-exhausts
+/// almost at once). The result is `O(children^2)` reindex work for a broad fan.
+///
+/// Capping a child's span at `CHILD_RESERVE` breaks that: a leaf still gets a
+/// generous fixed reserve to grow its own subtree, but no longer swallows an
+/// exponential share of a large interval, so a parent with a large interval can
+/// host up to `interval_width / CHILD_RESERVE` children before it ever needs a
+/// reindex. Genesis's interval is `ROOT_CAPACITY` (~2^63), so with this cap a
+/// direct fan off genesis absorbs ~2^23 (8 million) children reindex-free, while a
+/// chain is unaffected (half of a `CHILD_RESERVE`-wide interval is below the cap,
+/// so deep structures still split geometrically and reindex only locally). The cap
+/// is purely an interval-*numbering* choice: it changes which integers label the
+/// tree, never which block contains which, so every reachability query answer is
+/// identical.
+const CHILD_RESERVE: u64 = 1 << 40;
+
 /// An interval-labelled reachability tree plus per-block future-covering sets.
 ///
 /// The `intervals`/`fcs` pair backs the public queries; the remaining fields are
@@ -98,6 +127,15 @@ pub struct Reachability {
     /// Next free interval start within each block's child region `[start+1, end]`
     /// — i.e. the low end of its still-unallocated capacity.
     next_free: HashMap<BlockId, u64>,
+    /// Amortisation metric: how many interval **reindexes** [`Reachability::add_block`]
+    /// has triggered over this oracle's life. A reindex re-lays-out a subtree, so
+    /// this is the count of the expensive events; a lower value for the same
+    /// insertion sequence means better amortisation. Query-irrelevant bookkeeping.
+    reindexes: u64,
+    /// Amortisation metric: the total number of tree nodes re-laid-out across all
+    /// reindexes (summed subtree sizes). This is the actual work reindexing has
+    /// done — the headline cost the amortisation tuning drives down.
+    relayout_touches: u64,
 }
 
 impl Reachability {
@@ -111,6 +149,8 @@ impl Reachability {
             tree_parent: HashMap::new(),
             subtree_size: HashMap::new(),
             next_free: HashMap::new(),
+            reindexes: 0,
+            relayout_touches: 0,
         }
     }
 
@@ -153,6 +193,8 @@ impl Reachability {
             tree_parent,
             subtree_size,
             next_free: HashMap::new(),
+            reindexes: 0,
+            relayout_touches: 0,
         };
         // Lay out the whole tree under a generous root interval, so there is room
         // for later incremental inserts before the first reindex.
@@ -192,15 +234,22 @@ impl Reachability {
         }
 
         // 2. Allocate `id`'s tree interval out of its parent's remaining capacity.
-        //    Kaspa: split the remaining span in half, give the child the first
-        //    half (so a leaf still has room to grow its own subtree).
+        //    Kaspa splits the remaining span in half and gives the child the first
+        //    half (so a leaf still has room to grow its own subtree); we additionally
+        //    cap that span at `CHILD_RESERVE` so a wide fan does not exhaust a large
+        //    parent interval after only `log2(width)` children (see `CHILD_RESERVE`).
         let (_p_start, p_end) = self.intervals[&selected_parent];
         let rem_lo = self.next_free[&selected_parent];
         if rem_lo <= p_end {
-            let mid = rem_lo + (p_end - rem_lo) / 2;
-            self.intervals.insert(id, (rem_lo, mid));
+            // First half of the remaining span, but never more than `CHILD_RESERVE`
+            // points. `capped` cannot overflow `p_end`: the half-split is already
+            // `<= p_end`, and the `.min` only lowers the endpoint.
+            let half = rem_lo + (p_end - rem_lo) / 2;
+            let capped = rem_lo.saturating_add(CHILD_RESERVE - 1);
+            let end = half.min(capped);
+            self.intervals.insert(id, (rem_lo, end));
             self.next_free.insert(id, rem_lo + 1);
-            self.next_free.insert(selected_parent, mid + 1);
+            self.next_free.insert(selected_parent, end + 1);
         } else {
             // Parent is out of capacity: place a temporary interval, then reindex
             // the minimal enclosing subtree to make room (interval reindexing).
@@ -233,6 +282,8 @@ impl Reachability {
             // root interval could no longer cover its subtree (not reachable in
             // practice, and the interval space would need widening first).
             if capacity >= need.saturating_mul(2) || !self.tree_parent.contains_key(&anchor) {
+                self.reindexes += 1;
+                self.relayout_touches += need;
                 self.relayout_subtree(anchor, lo, hi);
                 return;
             }
@@ -264,7 +315,16 @@ impl Reachability {
                 // the slack. Sum over children stays <= region, so every child
                 // ends within `[lo+1, hi]` and each gets at least `sz` points.
                 let extra = ((slack as u128) * (sz as u128) / (total as u128)) as u64;
-                let span = sz + extra;
+                // Cap the slice at `CHILD_RESERVE` (but never below the child's own
+                // subtree size) for the same amortisation reason as incremental
+                // allocation: a re-laid-out wide fan must not hand each leaf an
+                // exponential share of the interval, or the parent's reserve is
+                // consumed and it re-exhausts at once. Capping only *lowers* a span,
+                // so the sum still fits and each child still gets at least `sz`
+                // points — the precondition and containment structure are preserved,
+                // and the trailing space stays as this node's reserve.
+                let cap = CHILD_RESERVE.max(sz);
+                let span = (sz + extra).min(cap);
                 let c_lo = cursor;
                 let c_hi = cursor + (span - 1);
                 stack.push((child, c_lo, c_hi));
@@ -306,6 +366,15 @@ impl Reachability {
             }
         }
         set.insert(pos, b);
+    }
+
+    /// Amortisation metrics `(reindexes, relayout_touches)`: how many interval
+    /// reindexes this oracle has performed and the total number of tree nodes those
+    /// reindexes re-laid-out. Both are pure bookkeeping — they never affect a query
+    /// answer — exposed so tests can prove the interval-allocation tuning keeps
+    /// reindex cost low. `relayout_touches` is the headline amortised-cost figure.
+    pub fn reindex_metrics(&self) -> (u64, u64) {
+        (self.reindexes, self.relayout_touches)
     }
 
     /// Whether `x` is a tree- (selected-chain-) ancestor of, or equal to, `y`.

@@ -375,3 +375,123 @@ fn matches_on_a_diamond() {
         .unwrap();
     assert_oracle_matches(&dag, &[g, a, b, m, c]);
 }
+
+// ---------------------------------------------------------------------------
+// Interval-reindex amortisation tuning (Stage 2)
+//
+// A wide fan under one selected parent is the pathological input for interval
+// allocation: before the `CHILD_RESERVE` cap, every leaf halved the parent's
+// remaining interval, so the parent exhausted its capacity every ~log2(width)
+// children and each further child forced a reindex that re-laid-out the *whole*
+// fan — `O(width^2)` reindex work. The cap bounds each child's slice, so a fan
+// far below `interval_width / CHILD_RESERVE` (~8M off genesis) is reindex-free.
+//
+// These tests pin BOTH halves of the change: correctness parity against the
+// naive brute-force oracle (the tuning only renumbers intervals, it must not
+// change a single answer) and the amortisation metric (reindexes actually
+// dropped). `Dag::reachability_reindex_metrics()` exposes `(reindexes,
+// relayout_touches)` of the incremental oracle — pure bookkeeping.
+// ---------------------------------------------------------------------------
+
+/// A moderate wide fan + a merge, checked exhaustively against the naive
+/// brute-force oracle (every ordered pair) *and* a freshly-built oracle, plus the
+/// amortisation metric: this pattern used to reindex repeatedly; it now performs
+/// zero reindexes.
+#[test]
+fn wide_fan_reindex_is_amortised_away() {
+    let genesis = Block::genesis(1, 0, 0, b"genesis".to_vec());
+    let mut dag = Dag::new(u16::MAX, genesis); // k huge so the whole fan stays blue
+    let g = dag.genesis();
+    let mut ids = vec![g];
+    let mut children: Vec<BlockId> = Vec::new();
+    for i in 0..250 {
+        let id = dag
+            .insert(Block::new(vec![g], 1, 0, 0, format!("w{i}").into_bytes()))
+            .unwrap();
+        children.push(id);
+        ids.push(id);
+    }
+    let merge = dag
+        .insert(Block::new(children, 1, 0, 0, b"merge".to_vec()))
+        .unwrap();
+    ids.push(merge);
+
+    // Behaviour preserved: matches the naive brute-force oracle AND a fresh build
+    // on every ordered pair.
+    assert_oracle_matches(&dag, &ids);
+    assert_incremental_equals_fresh(&dag, &ids);
+
+    // Amortisation: this fan (251 « ~8M) triggers no reindex at all.
+    let (reindexes, touches) = dag.reachability_reindex_metrics();
+    assert_eq!(reindexes, 0, "wide fan must be reindex-free after tuning");
+    assert_eq!(touches, 0, "a reindex-free fan re-lays-out no nodes");
+}
+
+/// A large wide fan (thousands of siblings) — the size at which the old halving
+/// allocation did its worst `O(width^2)` reindex work. Correctness is pinned to a
+/// freshly-built oracle on every pair (the O(width) naive walk is too slow at this
+/// size and is covered by the moderate test above), and the amortisation metric
+/// asserts the whole fan is still reindex-free.
+#[test]
+fn large_wide_fan_stays_reindex_free() {
+    let genesis = Block::genesis(1, 0, 0, b"genesis".to_vec());
+    let mut dag = Dag::new(u16::MAX, genesis);
+    let g = dag.genesis();
+    let mut ids = vec![g];
+    let mut children: Vec<BlockId> = Vec::new();
+    for i in 0..2000 {
+        let id = dag
+            .insert(Block::new(vec![g], 1, 0, 0, format!("w{i}").into_bytes()))
+            .unwrap();
+        children.push(id);
+        ids.push(id);
+    }
+    let merge = dag
+        .insert(Block::new(children, 1, 0, 0, b"merge".to_vec()))
+        .unwrap();
+    ids.push(merge);
+
+    assert_incremental_equals_fresh(&dag, &ids);
+    let (reindexes, touches) = dag.reachability_reindex_metrics();
+    // Before the tuning this fan reindexed hundreds of times, re-laying-out
+    // hundreds of thousands of nodes; now it does none.
+    assert_eq!(
+        reindexes, 0,
+        "a 2000-wide fan must be reindex-free after tuning"
+    );
+    assert_eq!(touches, 0, "a reindex-free fan re-lays-out no nodes");
+}
+
+/// Adversarial worst case for the reindex path itself: a long linear chain. Each
+/// block's interval still halves toward its parent's tip, so the tip churns and
+/// reindexes fire repeatedly — the case where reindexing is *legitimately*
+/// exercised. This guards that the amortisation tuning did not change any answer
+/// where the reindex path genuinely runs: every pair still matches a freshly-built
+/// oracle after the whole chain is built.
+#[test]
+fn deep_chain_still_reindexes_and_stays_correct() {
+    let genesis = Block::genesis(1, 0, 0, b"genesis".to_vec());
+    let mut dag = Dag::new(3, genesis);
+    let mut ids = vec![dag.genesis()];
+    for i in 0..800 {
+        let parent = *ids.last().unwrap();
+        ids.push(
+            dag.insert(Block::new(
+                vec![parent],
+                1,
+                0,
+                0,
+                format!("c{i}").into_bytes(),
+            ))
+            .unwrap(),
+        );
+    }
+    // The reindex path is genuinely exercised here (a chain still churns its tip).
+    let (reindexes, _) = dag.reachability_reindex_metrics();
+    assert!(reindexes > 0, "a long chain must still drive reindexes");
+    // ...and every answer still matches a from-scratch oracle. (Full naive
+    // brute-force parity for chains is covered at moderate n by
+    // `matches_on_a_linear_chain` and the random-DAG tests; the O(n^2)
+    // incremental-vs-fresh check here is the behaviour-preservation guard.)
+    assert_incremental_equals_fresh(&dag, &ids);
+}
