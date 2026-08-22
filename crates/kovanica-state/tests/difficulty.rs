@@ -8,7 +8,9 @@
 //! enters the DAG — the difficulty check surfaces as a `LedgerInsertError::Dag`.
 
 use kovanica_dag::{DagError, Retarget};
-use kovanica_state::{HalvingSchedule, DEFAULT_HALVING_ERA, Ledger, LedgerInsertError, Transaction, TxOutput};
+use kovanica_state::{
+    HalvingSchedule, Ledger, LedgerInsertError, Transaction, TxOutput, DEFAULT_HALVING_ERA,
+};
 
 const K: u16 = 3;
 const SUBSIDY: u64 = 1_000;

@@ -3,8 +3,8 @@
 //! state, and every block's view state — is identical to the original.
 
 use kovanica_state::{
-    Address, HalvingSchedule, DEFAULT_HALVING_ERA, KeyPair, Ledger, LedgerSnapshotError, OutPoint,
-    Transaction, TxOutput, UtxoSet,
+    Address, HalvingSchedule, KeyPair, Ledger, LedgerSnapshotError, OutPoint, Transaction,
+    TxOutput, UtxoSet, DEFAULT_HALVING_ERA,
 };
 
 const K: u16 = 3;

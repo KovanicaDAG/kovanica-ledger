@@ -12,7 +12,9 @@ use std::path::Path;
 
 use kovanica_dag::{decode_block, encode_block, Block, SnapshotError};
 
-use crate::ledger::{Ledger, LedgerError, LedgerSnapshotError, HalvingSchedule, DEFAULT_HALVING_ERA};
+use crate::ledger::{
+    HalvingSchedule, Ledger, LedgerError, LedgerSnapshotError, DEFAULT_HALVING_ERA,
+};
 
 /// Magic prefix identifying a Kovanica ledger log (`"KVLF"`).
 const MAGIC: [u8; 4] = *b"KVLF";

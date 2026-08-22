@@ -78,8 +78,8 @@ pub mod validation;
 
 pub use keys::{verify, Address, KeyPair};
 pub use ledger::{
-    apply_block, apply_dag, BlockSummary, Ledger, LedgerError, LedgerInsertError, LedgerRun,
-    LedgerSnapshotError, HalvingSchedule, DEFAULT_HALVING_ERA,
+    apply_block, apply_dag, BlockSummary, HalvingSchedule, Ledger, LedgerError, LedgerInsertError,
+    LedgerRun, LedgerSnapshotError, DEFAULT_HALVING_ERA,
 };
 pub use store::{LedgerStore, StoreError};
 pub use tx::{
@@ -87,4 +87,7 @@ pub use tx::{
     TxInput, TxOutput,
 };
 pub use utxo::UtxoSet;
-pub use validation::{validate_block_payload, BlockValidationError, TxStructureValidator, MAX_TX_SIZE, MAX_BLOCK_PAYLOAD_SIZE, MAX_TXS_PER_BLOCK};
+pub use validation::{
+    validate_block_payload, BlockValidationError, TxStructureValidator, MAX_BLOCK_PAYLOAD_SIZE,
+    MAX_TXS_PER_BLOCK, MAX_TX_SIZE,
+};

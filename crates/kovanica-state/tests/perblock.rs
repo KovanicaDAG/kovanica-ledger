@@ -12,8 +12,8 @@
 
 use kovanica_dag::DagError;
 use kovanica_state::{
-    HalvingSchedule, DEFAULT_HALVING_ERA, apply_dag, Address, KeyPair, Ledger, LedgerError,
-    LedgerInsertError, OutPoint, Transaction, TxOutput, UtxoSet,
+    apply_dag, Address, HalvingSchedule, KeyPair, Ledger, LedgerError, LedgerInsertError, OutPoint,
+    Transaction, TxOutput, UtxoSet, DEFAULT_HALVING_ERA,
 };
 
 const K: u16 = 3;
