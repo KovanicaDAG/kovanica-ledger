@@ -3,7 +3,6 @@
 
 use std::net::TcpListener;
 use std::thread;
-use std::time::Duration;
 
 use kovanica_node::{net, p2p::Mesh, Node};
 
