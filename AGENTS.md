@@ -167,14 +167,15 @@ Not built yet (**TODO**): VRF and beyond. Update this tree when you add them.
   view state incrementally from its selected parent (per-block state stored in
   full — an O(n²) memory trade-off; the DAG's own `past` sets have since been
   replaced by the reachability oracle, but the per-block UTXO state has not). A
-  subsidy is a single per-block
-  constant (no halving schedule); coinbase maturity is only "not spendable in the
-  same block"; there are no tx size/weight limits. `Ledger::with_finality` prunes
-  the per-block state of final blocks (more than `finality_depth` blue score below
-  the tip) and rejects blocks built on final history; re-orgs above the finality
-  point are implicit (`ledger_state` follows the selected tip, no revert). Pruning
-  is of the per-block *state* only — the DAG stays append-only (DAG/`past`-set
-  pruning waits on the reachability oracle). See `ledger.rs` module docs.
+  halving schedule ([`HalvingSchedule`]) controls per-block subsidy; coinbase
+  maturity is only "not spendable in the same block"; TX size/weight limits are
+  enforced via [`MAX_TX_SIZE`], [`MAX_BLOCK_PAYLOAD_SIZE`], [`MAX_TXS_PER_BLOCK`].
+  `Ledger::with_finality` prunes the per-block state of final blocks (more than
+  `finality_depth` blue score below the tip) and rejects blocks built on final
+  history; re-orgs above the finality point are implicit (`ledger_state` follows
+  the selected tip, no revert). Pruning is of the per-block *state* only — the
+  DAG stays append-only (DAG/`past`-set pruning waits on the reachability oracle).
+  See `ledger.rs` module docs.
 - **Insert-time validation** now has both layers. `Dag::with_validator` +
   `TxStructureValidator` reject malformed/structurally-invalid blocks; `Ledger`
   additionally runs the **stateful** rules (input existence, signatures, value
@@ -314,7 +315,7 @@ is a library plus a binary (`serve`/`demo`).
       UTXO view.
 - [x] Long-lived TCP relay (`relay::RelaySession`): the same hello/block/tx
       envelopes as the in-process mesh, framed on a persistent socket. WebSocket
-      sessions remain TODO.
+      sessions implemented in `explorer.rs` (`/ws` endpoint).
 - [x] Difficulty adjustment for `work`: the retargeting algorithm
       (`difficulty::Retarget::next_work`) plus **consensus enforcement**. `Block`
       now carries a `timestamp_ms`; `Dag::set_difficulty` opts a DAG into
@@ -336,3 +337,8 @@ is a library plus a binary (`serve`/`demo`).
       exempt); `pow::mine` searches the nonce; threaded through
       `Ledger::set_proof_of_work` and the node's miner. Opt-in and composable with
       difficulty (`crates/kovanica-dag/tests/pow.rs`).
+- [x] Halving schedule (`HalvingSchedule` in `ledger.rs`, `Node::issuance_at()` in `node.rs`)
+- [x] TX size limits (`MAX_TX_SIZE`, `MAX_BLOCK_PAYLOAD_SIZE`, `MAX_TXS_PER_BLOCK` in `validation.rs`)
+- [x] WebSocket explorer (`/ws` endpoint in `explorer.rs`, `WsMsg` types)
+- [x] Live frontend WS client/hooks (`kovanica-web/src/lib/api/client.ts`: `wsClient`, `useWsMessage`, `useWsState`, `useWsBlocks`, `useWsTxs`)
+- [x] CORS proxy for live explorer (`/proxy` path on explorer.kovanica.online)
