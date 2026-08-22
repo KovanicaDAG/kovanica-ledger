@@ -26,7 +26,7 @@ const DOCS: &str = include_str!("../../../TESTNET.md");
 const ATOM: u64 = 100_000_000;
 const GENESIS_SUBSIDY: u64 = 50 * ATOM;
 const GENESIS_PREMINE: u64 = 50 * ATOM;
-const NETWORK: &str = "kovanica-testnet-1";
+const NETWORK: &str = "kovanica-testnet";
 const TAP_REWARD_ATOMS: u64 = ATOM / 100;
 const TAP_DAILY: u32 = 40;
 const ACTORS: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -1349,7 +1349,7 @@ mod tests {
         assert!(json.contains("\"token\":\"KVNC\""));
         assert!(json.contains("\"ui\":\"v5\""));
         assert!(json.contains("\"pow\":true"));
-        assert!(json.contains("\"network\":\"kovanica-testnet-1\""));
+        assert!(json.contains("\"network\":\"kovanica-testnet\""));
         assert!(json.contains("\"subsidy\":5000000000"));
     }
 

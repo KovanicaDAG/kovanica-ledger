@@ -1,6 +1,6 @@
 # Kovanica Ledger
 
-**Default branch: `vps-live`.** This is the Rust node running on the VPS (`kovanica-testnet-1`).
+**Default branch: `vps-live`.** This is the Rust node running on the VPS (`kovanica-testnet`).
 
 | Host | Process |
 | --- | --- |
@@ -18,7 +18,7 @@ TCP **:9000** is the only P2P path (libp2p/30333 removed). Clones: `KOVANICA_PEE
 Do **not** rebuild from `claude/claude-md-docs-*` — that line has no HTTP `explorer` mode.
 UI is TypeScript only: [kovanica-web](https://github.com/KovanicaDAG/kovanica-web). GHOSTDAG / UTXO / Ed25519 stay here.
 
-See [`TESTNET.md`](./TESTNET.md) for `kovanica-testnet-1`.
+See [`TESTNET.md`](./TESTNET.md) for `kovanica-testnet`.
 
 ---
 
