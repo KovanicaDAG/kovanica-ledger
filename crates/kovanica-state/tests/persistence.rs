@@ -14,7 +14,7 @@ const SCHEDULE: HalvingSchedule = HalvingSchedule::new(SUBSIDY, DEFAULT_HALVING_
 fn snapshot(utxo: &UtxoSet) -> Vec<(OutPoint, u64, Address)> {
     let mut rows: Vec<(OutPoint, u64, Address)> =
         utxo.iter().map(|(op, o)| (*op, o.value, o.owner)).collect();
-    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.sort_by_key(|row| row.0);
     rows
 }
 

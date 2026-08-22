@@ -171,7 +171,7 @@ fn b58_decode(s: &str) -> Result<Vec<u8>, &'static str> {
         return Err("empty kvnc payload");
     }
     // 40 accumulator bytes (LSB first) so overflow past 32 is detectable.
-    let mut acc = vec![0u8; 40];
+    let mut acc = [0u8; 40];
     for c in s.bytes() {
         let val = B58
             .iter()

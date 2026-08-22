@@ -102,6 +102,8 @@ struct Explorer {
 }
 
 impl Explorer {
+    /// Test constructor: a fresh in-memory mesh, no persistence or sockets.
+    #[cfg(test)]
     fn boot() -> Self {
         let mut mesh = line_mesh();
         mesh.drain(16);
@@ -328,6 +330,7 @@ fn load_or_genesis(name: &str) -> Node {
     genesis_node()
 }
 
+#[cfg(test)]
 fn line_mesh() -> Mesh {
     let mut mesh = Mesh::new();
     mesh.add("alpha", genesis_node());

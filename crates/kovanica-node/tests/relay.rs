@@ -85,8 +85,7 @@ fn a_produced_block_converges_over_a_live_session() {
             .unwrap();
         server.send(&RelayMsg::Block(record)).unwrap();
         // Keep the session open and send a second block after the first.
-        let second = server.recv().unwrap();
-        second
+        server.recv().unwrap()
     });
 
     let mut receiver = genesis_node();
