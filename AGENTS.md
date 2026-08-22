@@ -382,10 +382,10 @@ CI gates every push (`fmt --check`, `clippy -D warnings`,
 Goal: make the running testnet trustworthy to operate day-to-day. No
 consensus changes.
 
-- [ ] Arm auto-deploy: add `VPS_HOST` / `VPS_USERNAME` / `VPS_PRIVATE_KEY`
-      repo secrets and set `DEPLOY_ENABLED=true`; verify a merge ships green.
-      (Deploy script fixed to restart the real pm2 process; awaiting the
-      deploy key on the VPS + secrets.)
+- [x] Arm auto-deploy: `VPS_HOST` / `VPS_USERNAME` / `VPS_PRIVATE_KEY`
+      secrets + `DEPLOY_ENABLED=true`; verified end-to-end (merge → tests →
+      SSH build on the VPS → pm2 restart; deploy exports cargo/pm2 PATH for
+      the non-interactive shell).
 - [x] Seed ops runbook: `OPERATIONS.md` — backup/restore of `data/`,
       restart drill, post-deploy checks (`api/head`, both listeners,
       peer exchange), log locations, network-marker semantics.
