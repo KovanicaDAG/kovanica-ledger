@@ -387,29 +387,72 @@ fn bind_p2p() -> Vec<TcpListener> {
         eprintln!("kovanica p2p listen disabled");
         return Vec::new();
     }
-    let mut addrs = vec![raw.clone()];
+    let listeners = bind_p2p_addrs(&raw);
+    if listeners.is_empty() && !raw.is_empty() {
+        eprintln!("kovanica p2p listen {raw} produced no listeners");
+    }
+    listeners
+}
+
+fn bind_p2p_addrs(raw: &str) -> Vec<TcpListener> {
+    let mut addrs = vec![raw.to_string()];
     if let Some(port) = raw.strip_prefix("0.0.0.0:") {
         addrs.push(format!("[::]:{port}"));
     }
     let mut out = Vec::new();
     for addr in addrs {
-        match TcpListener::bind(&addr) {
-            Ok(listener) => {
-                if let Err(e) = listener.set_nonblocking(true) {
-                    eprintln!("kovanica p2p listen {addr} nonblocking failed: {e}");
-                    continue;
+        let listener = if addr.starts_with("[::]:") {
+            // A wildcard [::] socket with the default v6only=0 covers IPv4
+            // too, so it would collide with the 0.0.0.0 listener already
+            // bound above (EADDRINUSE). Mark it v6-only first — that needs a
+            // setsockopt before bind, hence socket2 rather than std.
+            match bind_v6_only(&addr) {
+                Ok(l) => Some(l),
+                Err(e) => {
+                    eprintln!("kovanica p2p listen {addr} failed: {e}");
+                    None
                 }
-                if let Ok(local) = listener.local_addr() {
-                    eprintln!("kovanica p2p listen {local}");
+            }
+        } else {
+            match TcpListener::bind(&addr) {
+                Ok(l) => Some(l),
+                Err(e) => {
+                    eprintln!("kovanica p2p listen {addr} failed: {e}");
+                    None
                 }
-                out.push(listener);
             }
-            Err(e) => {
-                eprintln!("kovanica p2p listen {addr} failed: {e}");
-            }
+        };
+        let Some(listener) = listener else { continue };
+        if let Err(e) = listener.set_nonblocking(true) {
+            eprintln!("kovanica p2p listen {addr} nonblocking failed: {e}");
+            continue;
         }
+        if let Ok(local) = listener.local_addr() {
+            eprintln!("kovanica p2p listen {local}");
+        }
+        out.push(listener);
     }
     out
+}
+
+/// Bind an `[::]:port` listener with IPV6_V6ONLY set, so it accepts IPv6
+/// only and leaves the IPv4 wildcard to its sibling socket.
+fn bind_v6_only(addr: &str) -> std::io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let sock_addr: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}")))?;
+    let socket = Socket::new(
+        Domain::for_address(sock_addr),
+        Type::STREAM,
+        Some(Protocol::TCP),
+    )?;
+    socket.set_only_v6(true)?;
+    socket.bind(&sock_addr.into())?;
+    socket.listen(128)?;
+    let listener: std::net::TcpListener = socket.into();
+    listener.set_nonblocking(true)?;
+    Ok(listener)
 }
 
 fn peer_list() -> Vec<String> {
@@ -1551,5 +1594,26 @@ mod tests {
                 .unwrap(),
             1u128
         );
+    }
+
+    #[test]
+    fn dual_stack_binds_v4_and_v6_on_the_same_port() {
+        // Skip where IPv6 is unavailable (some CI runners / containers).
+        if TcpListener::bind("[::]:0").is_err() {
+            return;
+        }
+        // Derive the port from the pid so parallel tests rarely collide.
+        let port: u16 = 20000 + u16::try_from(std::process::id() % 20_000).unwrap_or(0);
+        let raw = format!("0.0.0.0:{port}");
+        let listeners = bind_p2p_addrs(&raw);
+        assert_eq!(listeners.len(), 2, "want one v4 and one v6 listener");
+        for l in &listeners {
+            assert_eq!(l.local_addr().unwrap().port(), port);
+        }
+        // The v6 listener must genuinely be reachable on the v6 wildcard.
+        let mut c =
+            std::net::TcpStream::connect(format!("[::1]:{port}")).expect("v6 loopback connect");
+        use std::io::Write as _;
+        let _ = c.write_all(b"x"); // accepted is all we prove; write may race close
     }
 }
