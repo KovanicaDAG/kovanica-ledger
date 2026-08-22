@@ -673,7 +673,7 @@ pub fn serve_headers_first(
 
     // Step 1: read client inventory, write our inventory
     let client_inv_bytes = read_frame(stream, MAX_FRAME_BYTES)?;
-    let client_inv = decode_inventory(&client_inv_bytes)?;
+    let _client_inv = decode_inventory(&client_inv_bytes)?;
     let our_inv = encode_inventory(&node.inventory());
     write_frame(stream, &our_inv)?;
 

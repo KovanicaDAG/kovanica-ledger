@@ -227,12 +227,14 @@ impl Mesh {
     pub fn sync_headers_first(&mut self, from: &str, to: &str) -> Result<usize, P2pError> {
         self.require(from)?;
         self.require(to)?;
-        let from_node = self.nodes.get(from).expect("checked").clone();
-        let mut to_node = self.nodes.get_mut(to).expect("checked");
-        // In-process: just use the existing gossip but with headers-first logic
-        // For now, fall back to full export/import which is equivalent
+        // Clone the source node's state to avoid borrow conflict
+        let records: Vec<BlockRecord> = {
+            let from_node = self.nodes.get(from).expect("checked");
+            from_node.export()
+        };
+        let to_node = self.nodes.get_mut(to).expect("checked");
         let mut applied = 0;
-        for record in from_node.export() {
+        for record in records {
             to_node.receive_block(record).map_err(P2pError::Node)?;
             applied += 1;
         }

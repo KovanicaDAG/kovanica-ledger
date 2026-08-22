@@ -180,7 +180,7 @@ impl Explorer {
                         eprintln!("kovanica p2p headers-first served {peer}");
                         persist_all(&self.mesh);
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         // Fall back to legacy full-dump exchange
                         stream.set_nonblocking(false).unwrap();
                         match serve_exchange(&mut stream, n, Duration::from_millis(800)) {
