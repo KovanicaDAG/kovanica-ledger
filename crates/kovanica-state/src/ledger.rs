@@ -65,7 +65,10 @@ pub struct HalvingSchedule {
 impl HalvingSchedule {
     /// Create a new halving schedule.
     pub const fn new(genesis_subsidy: u64, halving_era: u64) -> Self {
-        Self { genesis_subsidy, halving_era }
+        Self {
+            genesis_subsidy,
+            halving_era,
+        }
     }
 
     /// Compute the subsidy for a block at `height` (height 0 = genesis).
@@ -445,7 +448,11 @@ impl Ledger {
     /// parameter and `schedule` the halving schedule for per-block issuance.
     ///
     /// Fails if `genesis_txs` are not a valid block on an empty UTXO set.
-    pub fn new(k: KParam, schedule: HalvingSchedule, genesis_txs: &[Transaction]) -> Result<Self, LedgerError> {
+    pub fn new(
+        k: KParam,
+        schedule: HalvingSchedule,
+        genesis_txs: &[Transaction],
+    ) -> Result<Self, LedgerError> {
         let genesis_subsidy = schedule.subsidy_at(0);
         let mut state = UtxoSet::new();
         apply_block(&mut state, genesis_txs, genesis_subsidy)?;
@@ -614,7 +621,11 @@ impl Ledger {
                 // A merged block that conflicts in this view simply does not
                 // apply — its transactions were valid in their own view, not
                 // necessarily here. This mirrors apply_dag's per-block reject.
-                let _ = apply_block(&mut state, &merged_txs, self.schedule.subsidy_at(merged_height));
+                let _ = apply_block(
+                    &mut state,
+                    &merged_txs,
+                    self.schedule.subsidy_at(merged_height),
+                );
             }
         }
 
@@ -717,7 +728,8 @@ impl Ledger {
         if version != LEDGER_VERSION {
             return Err(LedgerSnapshotError::UnsupportedVersion(version));
         }
-        let genesis_subsidy = u64::from_le_bytes(bytes[6..14].try_into().expect("14 - 6 == 8 bytes"));
+        let genesis_subsidy =
+            u64::from_le_bytes(bytes[6..14].try_into().expect("14 - 6 == 8 bytes"));
         let halving_era = u64::from_le_bytes(bytes[14..22].try_into().expect("22 - 14 == 8 bytes"));
         let schedule = HalvingSchedule::new(genesis_subsidy, halving_era);
 
@@ -726,8 +738,8 @@ impl Ledger {
         let genesis = blocks.next().ok_or(LedgerSnapshotError::Empty)?;
         let genesis_txs =
             decode_block_payload(genesis.payload()).map_err(LedgerSnapshotError::Payload)?;
-        let mut ledger =
-            Ledger::new(snapshot.k, schedule, &genesis_txs).map_err(LedgerSnapshotError::Genesis)?;
+        let mut ledger = Ledger::new(snapshot.k, schedule, &genesis_txs)
+            .map_err(LedgerSnapshotError::Genesis)?;
         for block in blocks {
             let txs =
                 decode_block_payload(block.payload()).map_err(LedgerSnapshotError::Payload)?;

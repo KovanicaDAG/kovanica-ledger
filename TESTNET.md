@@ -1,4 +1,4 @@
-# kovanica-testnet-1
+# kovanica-testnet
 
 Public BlockDAG testnet. Native token **KVNC** (8 decimals).
 
@@ -7,7 +7,7 @@ Public BlockDAG testnet. Native token **KVNC** (8 decimals).
 | Explorer | https://explorer.kovanica.online |
 | Wallet | https://wallet.kovanica.online |
 | Node source | https://github.com/KovanicaDAG/kovanica-node |
-| Network | `kovanica-testnet-1` |
+| Network | `kovanica-testnet` |
 | Premine | 50 KVNC (founder) |
 | Subsidy cap | 50 KVNC / block, halves every 1000 blocks |
 | Min fee | 0.0001 KVNC at genesis |

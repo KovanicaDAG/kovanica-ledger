@@ -110,10 +110,16 @@ impl fmt::Display for BlockValidationError {
                 write!(f, "tx {tx_index} size {size} exceeds limit {MAX_TX_SIZE}")
             }
             BlockValidationError::BlockPayloadTooLarge { size } => {
-                write!(f, "block payload size {size} exceeds limit {MAX_BLOCK_PAYLOAD_SIZE}")
+                write!(
+                    f,
+                    "block payload size {size} exceeds limit {MAX_BLOCK_PAYLOAD_SIZE}"
+                )
             }
             BlockValidationError::TooManyTransactions { count } => {
-                write!(f, "block has {count} transactions, limit is {MAX_TXS_PER_BLOCK}")
+                write!(
+                    f,
+                    "block has {count} transactions, limit is {MAX_TXS_PER_BLOCK}"
+                )
             }
         }
     }
@@ -125,7 +131,9 @@ impl std::error::Error for BlockValidationError {}
 /// standalone form of what [`TxStructureValidator`] runs at insert time.
 pub fn validate_block_payload(payload: &[u8]) -> Result<(), BlockValidationError> {
     if payload.len() > MAX_BLOCK_PAYLOAD_SIZE {
-        return Err(BlockValidationError::BlockPayloadTooLarge { size: payload.len() });
+        return Err(BlockValidationError::BlockPayloadTooLarge {
+            size: payload.len(),
+        });
     }
     let txs = decode_block_payload(payload).map_err(BlockValidationError::Payload)?;
     if txs.len() > MAX_TXS_PER_BLOCK {
@@ -141,7 +149,10 @@ pub fn validate_block_payload(payload: &[u8]) -> Result<(), BlockValidationError
 fn validate_tx_structure(index: usize, tx: &Transaction) -> Result<(), BlockValidationError> {
     let tx_size = tx.encode().len();
     if tx_size > MAX_TX_SIZE {
-        return Err(BlockValidationError::TxTooLarge { tx_index: index, size: tx_size });
+        return Err(BlockValidationError::TxTooLarge {
+            tx_index: index,
+            size: tx_size,
+        });
     }
 
     if tx.is_coinbase() {
@@ -301,12 +312,16 @@ mod tests {
         let kp = KeyPair::from_u64(1);
         // Create a transaction with a huge tag to exceed MAX_TX_SIZE
         let huge_tag = vec![0u8; MAX_TX_SIZE + 100];
-        let large_tx = Transaction::signed(&[(coin(7), &kp)], vec![TxOutput::new(5, addr(2))], huge_tag);
+        let large_tx =
+            Transaction::signed(&[(coin(7), &kp)], vec![TxOutput::new(5, addr(2))], huge_tag);
         let tx_size = large_tx.encode().len();
         let payload = encode_block_payload(&[large_tx]);
         assert_eq!(
             validate_block_payload(&payload),
-            Err(BlockValidationError::TxTooLarge { tx_index: 0, size: tx_size })
+            Err(BlockValidationError::TxTooLarge {
+                tx_index: 0,
+                size: tx_size
+            })
         );
     }
 
@@ -314,11 +329,14 @@ mod tests {
     fn block_payload_too_large_is_rejected() {
         let kp = KeyPair::from_u64(1);
         let huge_tag = vec![0u8; MAX_BLOCK_PAYLOAD_SIZE + 100];
-        let large_tx = Transaction::signed(&[(coin(7), &kp)], vec![TxOutput::new(5, addr(2))], huge_tag);
+        let large_tx =
+            Transaction::signed(&[(coin(7), &kp)], vec![TxOutput::new(5, addr(2))], huge_tag);
         let payload = encode_block_payload(&[large_tx]);
         assert_eq!(
             validate_block_payload(&payload),
-            Err(BlockValidationError::BlockPayloadTooLarge { size: payload.len() })
+            Err(BlockValidationError::BlockPayloadTooLarge {
+                size: payload.len()
+            })
         );
     }
 
@@ -327,7 +345,11 @@ mod tests {
         let kp = KeyPair::from_u64(1);
         let txs: Vec<Transaction> = (0..MAX_TXS_PER_BLOCK + 10)
             .map(|i| {
-                Transaction::signed(&[(coin(i as u8), &kp)], vec![TxOutput::new(5, addr(2))], vec![i as u8])
+                Transaction::signed(
+                    &[(coin(i as u8), &kp)],
+                    vec![TxOutput::new(5, addr(2))],
+                    vec![i as u8],
+                )
             })
             .collect();
         let payload = encode_block_payload(&txs);

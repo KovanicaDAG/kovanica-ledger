@@ -3,7 +3,10 @@
 
 use std::fs;
 
-use kovanica_state::{HalvingSchedule, DEFAULT_HALVING_ERA, KeyPair, Ledger, LedgerStore, OutPoint, Transaction, TxOutput};
+use kovanica_state::{
+    HalvingSchedule, KeyPair, Ledger, LedgerStore, OutPoint, Transaction, TxOutput,
+    DEFAULT_HALVING_ERA,
+};
 
 const K: u16 = 3;
 const SUBSIDY: u64 = 1_000;

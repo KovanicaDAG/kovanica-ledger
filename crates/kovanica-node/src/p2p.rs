@@ -237,11 +237,7 @@ impl Mesh {
     /// Produce an empty block on `name` and announce it.
     pub fn produce_empty(&mut self, name: &str) -> Result<BlockId, P2pError> {
         self.require(name)?;
-        let id = self
-            .nodes
-            .get_mut(name)
-            .expect("checked")
-            .produce_empty()?;
+        let id = self.nodes.get_mut(name).expect("checked").produce_empty()?;
         if let Some(rec) = self.nodes.get(name).and_then(|n| n.block_record(&id)) {
             self.announce_block(name, rec);
         }

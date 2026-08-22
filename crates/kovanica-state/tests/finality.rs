@@ -6,8 +6,8 @@
 //! follows the selected tip, so re-orgs above the finality point are implicit).
 
 use kovanica_state::{
-    apply_dag, HalvingSchedule, DEFAULT_HALVING_ERA, KeyPair, Ledger, LedgerInsertError,
-    OutPoint, Transaction, TxOutput,
+    apply_dag, HalvingSchedule, KeyPair, Ledger, LedgerInsertError, OutPoint, Transaction,
+    TxOutput, DEFAULT_HALVING_ERA,
 };
 
 const K: u16 = 3;
