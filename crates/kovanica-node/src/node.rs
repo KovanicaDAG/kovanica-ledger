@@ -140,6 +140,35 @@ pub struct BlockRecord {
     pub txs: Vec<Transaction>,
 }
 
+/// A block header: the block's consensus fields plus a commitment to its
+/// payload, but without the payload itself. Headers are **untrusted inventory**
+/// — a peer advertises which blocks it has by sending headers; the receiver
+/// decides which bodies to fetch by hash. Trust is anchored when the body
+/// arrives: the receiver checks that `BLAKE3(payload) == payload_hash` and that
+/// `Block::new(parents, work, timestamp_ms, nonce, payload).id() == id`. Until
+/// that check passes the header is just a hint (see `Block::id` — the id
+/// commits to the raw payload bytes, not to their hash, so a header alone
+/// cannot self-validate, exactly like Bitcoin's headers commit to transactions
+/// via the merkle root).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockHeader {
+    /// The block's BLAKE3 id (over parents, work, timestamp, nonce, and the
+    /// full payload — see `Block::id`).
+    pub id: BlockId,
+    /// The block's parents (sorted, de-duplicated — as `Block` stores them).
+    pub parents: Vec<BlockId>,
+    /// The block's work weight.
+    pub work: u128,
+    /// The block's timestamp, in milliseconds.
+    pub timestamp_ms: u64,
+    /// The block's proof-of-work nonce.
+    pub nonce: u64,
+    /// `BLAKE3(payload)` where `payload = encode_block_payload(txs)`.
+    pub payload_hash: [u8; 32],
+    /// Length of `payload` in bytes.
+    pub payload_len: u64,
+}
+
 /// A running node holding the ledger and mempool in memory.
 #[derive(Default)]
 pub struct Node {
@@ -608,6 +637,98 @@ impl Node {
         };
         let utxo = ledger.ledger_state();
         self.mempool.evict_invalid(&utxo);
+    }
+
+    /// The header for block `id`, if present. The header commits to the payload
+    /// via `payload_hash`/`payload_len` but omits the payload bytes themselves.
+    pub fn block_header(&self, id: &BlockId) -> Option<BlockHeader> {
+        let dag = self.ledger.as_ref()?.dag();
+        let block = dag.block(id)?;
+        let payload = block.payload();
+        let hash = *blake3::hash(payload).as_bytes();
+        Some(BlockHeader {
+            id: *id,
+            parents: block.parents().to_vec(),
+            work: block.work(),
+            timestamp_ms: block.timestamp_ms(),
+            nonce: block.nonce(),
+            payload_hash: hash,
+            payload_len: payload.len() as u64,
+        })
+    }
+
+    /// Every non-genesis block as a header, in topological order (the same order
+    /// as `export`, minus the payload). Suitable for headers-first sync: a peer
+    /// learns the DAG shape without downloading bodies.
+    pub fn export_headers(&self) -> Vec<BlockHeader> {
+        let Some(ledger) = self.ledger.as_ref() else {
+            return Vec::new();
+        };
+        let genesis = ledger.genesis();
+        ledger
+            .dag()
+            .linearize()
+            .into_iter()
+            .filter(|id| *id != genesis)
+            .filter_map(|id| self.block_header(&id))
+            .collect()
+    }
+
+    /// Every block id in the DAG (including genesis), sorted. The inventory a
+    /// node advertises so a peer can compute which headers it lacks.
+    pub fn inventory(&self) -> Vec<BlockId> {
+        let Some(ledger) = self.ledger.as_ref() else {
+            return Vec::new();
+        };
+        let mut ids: Vec<BlockId> = ledger.dag().linearize();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// The genesis block id, if initialised.
+    pub fn genesis_id(&self) -> Option<BlockId> {
+        self.ledger.as_ref().map(|l| l.genesis())
+    }
+
+    /// Whether the DAG contains `id`.
+    pub fn has_block(&self, id: &BlockId) -> bool {
+        self.ledger.as_ref().is_some_and(|l| l.dag().contains(id))
+    }
+
+    /// Headers for the blocks in `ids` that are present, in the order given.
+    pub fn headers_for(&self, ids: &[BlockId]) -> Vec<BlockHeader> {
+        ids.iter().filter_map(|id| self.block_header(id)).collect()
+    }
+
+    /// Verify that `record` matches `header` (id, parents, work, timestamp,
+    /// nonce, payload hash/len). Returns the block id on success.
+    pub fn verify_header_body(header: &BlockHeader, record: &BlockRecord) -> Option<BlockId> {
+        let payload = encode_block_payload(&record.txs);
+        if payload.len() as u64 != header.payload_len {
+            return None;
+        }
+        if *blake3::hash(&payload).as_bytes() != header.payload_hash {
+            return None;
+        }
+        let block = Block::new(
+            record.parents.clone(),
+            record.work,
+            record.timestamp_ms,
+            record.nonce,
+            payload,
+        );
+        let id = block.id();
+        if id != header.id {
+            return None;
+        }
+        if record.parents != header.parents
+            || record.work != header.work
+            || record.timestamp_ms != header.timestamp_ms
+            || record.nonce != header.nonce
+        {
+            return None;
+        }
+        Some(id)
     }
 
     /// The gossip record for a block, if present.

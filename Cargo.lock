@@ -234,6 +234,7 @@ name = "kovanica-node"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "blake3",
  "hex",
  "kovanica-dag",
  "kovanica-state",

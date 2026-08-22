@@ -43,7 +43,11 @@ pub mod rpc;
 
 pub use explorer::serve as serve_explorer;
 pub use mempool::Mempool;
-pub use net::NetError;
-pub use node::{BlockRecord, Node, NodeError, Prepared, Sent};
+pub use net::{
+    decode_bodies, decode_getbodies, decode_getheaders, decode_headers, decode_inventory,
+    encode_bodies, encode_getbodies, encode_getheaders, encode_headers, encode_inventory,
+    exchange_full_dump, serve_headers_first, sync_headers_first, NetError, SyncStats,
+};
+pub use node::{BlockHeader, BlockRecord, Node, NodeError, Prepared, Sent};
 pub use p2p::{GossipEvent, GossipKind, Mesh, P2pError};
 pub use relay::{apply_relay, RelayMsg, RelaySession};
