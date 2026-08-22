@@ -51,7 +51,12 @@ jobs:
           key: ${{ secrets.VPS_PRIVATE_KEY }}
           port: 22
           script: |
+            set -e
             cd /root/kovanica-ledger
-            git pull origin main
+            git pull --ff-only origin main
             cargo build --release
-            pm2 restart ecosystem.config.js
+            # Restart the seed process pm2 already knows (started with the
+            # KOVANICA_* env inline); ecosystem.config.js in the repo is a
+            # stale template with an unrelated cwd — do not use it here.
+            pm2 restart kovanica-explorer --update-env
+            pm2 save
