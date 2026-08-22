@@ -52,11 +52,15 @@ jobs:
           port: 22
           script: |
             set -e
+            # Non-interactive SSH does not source ~/.profile, so rustup's
+            # cargo (and sometimes npm-global pm2) are missing from PATH.
+            export PATH="$HOME/.cargo/bin:$PATH"
             cd /root/kovanica-ledger
             git pull --ff-only origin main
             cargo build --release
             # Restart the seed process pm2 already knows (started with the
             # KOVANICA_* env inline); ecosystem.config.js in the repo is a
             # stale template with an unrelated cwd — do not use it here.
+            command -v pm2 >/dev/null || export PATH="$PATH:/usr/local/bin:/usr/lib/node_modules/.bin"
             pm2 restart kovanica-explorer --update-env
             pm2 save
