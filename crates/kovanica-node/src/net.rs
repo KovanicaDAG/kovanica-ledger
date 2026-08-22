@@ -669,6 +669,10 @@ pub fn serve_headers_first(
     node: &mut Node,
     timeout: Duration,
 ) -> Result<(), NetError> {
+    // The stream inherits the listener's non-blocking mode; switch back to
+    // blocking so the read timeouts below are honoured (otherwise reads fail
+    // instantly with EAGAIN over higher-latency links like Tailscale).
+    stream.set_nonblocking(false).map_err(io)?;
     stream.set_read_timeout(Some(timeout)).map_err(io)?;
     stream.set_write_timeout(Some(timeout)).map_err(io)?;
 
